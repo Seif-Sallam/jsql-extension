@@ -1,0 +1,9 @@
+.github/**
+.DS_Store
+*.vsix
+node_modules/**
+npm-debug.log*
+yarn-error.log*
+**/*.map
+terminals/**
+agent-transcripts/**

@@ -4,6 +4,7 @@
   "description": "SQL + Jinja2 syntax highlighting for JSql query patterns in Python",
   "version": "0.1.0",
   "publisher": "local",
+  "license": "MIT",
   "engines": { "vscode": "^1.74.0" },
   "categories": ["Programming Languages"],
   "activationEvents": ["*"],

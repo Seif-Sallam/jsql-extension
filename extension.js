@@ -4,61 +4,61 @@ const vscode = require('vscode');
 const THEMES = {
     dracula: {
         identifier: { color: '#B0B8C1' },
-        keyword:    { color: '#6BB8C8', fontWeight: 'bold' },
-        function:   { color: '#FF79C6' },
-        param:      { color: '#FFB86C' },
-        jinja:      { color: '#BD93F9' },
-        comment:    { color: '#6272A4', fontStyle: 'italic' },
-        number:     { color: '#F1FA8C' },
-        string:     { color: '#50FA7B' },
-        json_path:  { color: '#E5C07B' },
-        operator:   { color: '#8BE9FD' },
-        boolean:    { color: '#FF8585', fontWeight: 'bold' },
+        keyword: { color: '#6BB8C8', fontWeight: 'bold' },
+        function: { color: '#FF79C6' },
+        param: { color: '#FFB86C' },
+        jinja: { color: '#BD93F9' },
+        comment: { color: '#6272A4', fontStyle: 'italic' },
+        number: { color: '#F1FA8C' },
+        string: { color: '#50FA7B' },
+        json_path: { color: '#E5C07B' },
+        operator: { color: '#8BE9FD' },
+        boolean: { color: '#FF8585', fontWeight: 'bold' },
     },
     monokai: {
         identifier: { color: '#F8F8F2' },
-        keyword:    { color: '#F92672', fontWeight: 'bold' },
-        function:   { color: '#A6E22E' },
-        param:      { color: '#FD971F' },
-        jinja:      { color: '#AE81FF' },
-        comment:    { color: '#75715E', fontStyle: 'italic' },
-        number:     { color: '#AE81FF' },
-        string:     { color: '#E6DB74' },
-        json_path:  { color: '#FD971F' },
-        operator:   { color: '#F92672' },
-        boolean:    { color: '#66D9E8', fontWeight: 'bold' },
+        keyword: { color: '#F92672', fontWeight: 'bold' },
+        function: { color: '#A6E22E' },
+        param: { color: '#FD971F' },
+        jinja: { color: '#AE81FF' },
+        comment: { color: '#75715E', fontStyle: 'italic' },
+        number: { color: '#AE81FF' },
+        string: { color: '#E6DB74' },
+        json_path: { color: '#FD971F' },
+        operator: { color: '#F92672' },
+        boolean: { color: '#66D9E8', fontWeight: 'bold' },
     },
     'one-dark': {
         identifier: { color: '#ABB2BF' },
-        keyword:    { color: '#C678DD', fontWeight: 'bold' },
-        function:   { color: '#61AFEF' },
-        param:      { color: '#D19A66' },
-        jinja:      { color: '#56B6C2' },
-        comment:    { color: '#5C6370', fontStyle: 'italic' },
-        number:     { color: '#D19A66' },
-        string:     { color: '#98C379' },
-        json_path:  { color: '#E5C07B' },
-        operator:   { color: '#56B6C2' },
-        boolean:    { color: '#E06C75', fontWeight: 'bold' },
+        keyword: { color: '#C678DD', fontWeight: 'bold' },
+        function: { color: '#61AFEF' },
+        param: { color: '#D19A66' },
+        jinja: { color: '#56B6C2' },
+        comment: { color: '#5C6370', fontStyle: 'italic' },
+        number: { color: '#D19A66' },
+        string: { color: '#98C379' },
+        json_path: { color: '#E5C07B' },
+        operator: { color: '#56B6C2' },
+        boolean: { color: '#E06C75', fontWeight: 'bold' },
     },
 };
 
 const ALL_SQL_KEYWORDS = new Set([
-    'SELECT','FROM','WHERE','AND','OR','NOT','IN','LIKE','ILIKE','BETWEEN','IS','NULL',
-    'JOIN','LEFT','RIGHT','INNER','OUTER','CROSS','FULL','NATURAL','ON','USING','WITH',
-    'AS','DISTINCT','ORDER','BY','GROUP','HAVING','LIMIT','OFFSET','UNION','INTERSECT',
-    'EXCEPT','ALL','INSERT','INTO','VALUES','UPDATE','SET','DELETE','CREATE','ALTER',
-    'DROP','TABLE','VIEW','INDEX','EXISTS','CASE','WHEN','THEN','ELSE','END','RETURNING','TRUE','FALSE',
-    'PARTITION','OVER','WINDOW','ASC','DESC','NULLS','FIRST','LAST',
-    'INTERVAL','MICROSECOND','SECOND','MINUTE','HOUR','DAY','WEEK','MONTH','QUARTER','YEAR',
-    'SECOND_MICROSECOND','MINUTE_MICROSECOND','MINUTE_SECOND','HOUR_MICROSECOND','HOUR_SECOND',
-    'HOUR_MINUTE','DAY_MICROSECOND','DAY_SECOND','DAY_MINUTE','DAY_HOUR','YEAR_MONTH',
-    'COUNT','SUM','AVG','MIN','MAX','COALESCE','NULLIF','IFNULL','IF','CONCAT','CONCAT_WS',
-    'SUBSTRING','SUBSTR','LENGTH','TRIM','LTRIM','RTRIM','UPPER','LOWER','REPLACE','INSTR',
-    'DATE','DATE_FORMAT','DATE_ADD','DATE_SUB','DATEDIFF','NOW','CURDATE','CAST','CONVERT',
-    'GROUP_CONCAT','ROW_NUMBER','RANK','DENSE_RANK','LEAD','LAG','FIRST_VALUE','LAST_VALUE',
-    'ROUND','FLOOR','CEIL','CEILING','ABS','MOD','POWER','GREATEST','LEAST','TIMESTAMPDIFF','EXTRACT',
-    'JSON_EXTRACT','JSON_UNQUOTE',
+    'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'LIKE', 'ILIKE', 'BETWEEN', 'IS', 'NULL',
+    'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'CROSS', 'FULL', 'NATURAL', 'ON', 'USING', 'WITH',
+    'AS', 'DISTINCT', 'ORDER', 'BY', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'INTERSECT',
+    'EXCEPT', 'ALL', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'CREATE', 'ALTER',
+    'DROP', 'TABLE', 'VIEW', 'INDEX', 'EXISTS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'RETURNING', 'TRUE', 'FALSE',
+    'PARTITION', 'OVER', 'WINDOW', 'ASC', 'DESC', 'NULLS', 'FIRST', 'LAST',
+    'INTERVAL', 'MICROSECOND', 'SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR',
+    'SECOND_MICROSECOND', 'MINUTE_MICROSECOND', 'MINUTE_SECOND', 'HOUR_MICROSECOND', 'HOUR_SECOND',
+    'HOUR_MINUTE', 'DAY_MICROSECOND', 'DAY_SECOND', 'DAY_MINUTE', 'DAY_HOUR', 'YEAR_MONTH',
+    'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'NULLIF', 'IFNULL', 'IF', 'CONCAT', 'CONCAT_WS',
+    'SUBSTRING', 'SUBSTR', 'LENGTH', 'TRIM', 'LTRIM', 'RTRIM', 'UPPER', 'LOWER', 'REPLACE', 'INSTR',
+    'DATE', 'DATE_FORMAT', 'DATE_ADD', 'DATE_SUB', 'DATEDIFF', 'NOW', 'CURDATE', 'CAST', 'CONVERT',
+    'GROUP_CONCAT', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LEAD', 'LAG', 'FIRST_VALUE', 'LAST_VALUE',
+    'ROUND', 'FLOOR', 'CEIL', 'CEILING', 'ABS', 'MOD', 'POWER', 'GREATEST', 'LEAST', 'TIMESTAMPDIFF', 'EXTRACT',
+    'JSON_EXTRACT', 'JSON_UNQUOTE',
 ]);
 
 function levenshtein(a, b) {
@@ -67,9 +67,9 @@ function levenshtein(a, b) {
     for (let j = 0; j <= n; j++) dp[0][j] = j;
     for (let i = 1; i <= m; i++) {
         for (let j = 1; j <= n; j++) {
-            dp[i][j] = a[i-1] === b[j-1]
-                ? dp[i-1][j-1]
-                : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1]
+                : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
         }
     }
     return dp[m][n];
@@ -97,8 +97,8 @@ function matchKeyword(s, i, kw) {
 function extractCaseContent(sql, start) {
     let depth = 1, i = start;
     while (i < sql.length && depth > 0) {
-        if      (matchKeyword(sql, i, 'CASE')) { depth++; i += 4; }
-        else if (matchKeyword(sql, i, 'END'))  { depth--; if (depth === 0) return { content: sql.slice(start, i), afterEnd: i + 3 }; i += 3; }
+        if (matchKeyword(sql, i, 'CASE')) { depth++; i += 4; }
+        else if (matchKeyword(sql, i, 'END')) { depth--; if (depth === 0) return { content: sql.slice(start, i), afterEnd: i + 3 }; i += 3; }
         else i++;
     }
     return { content: sql.slice(start), afterEnd: sql.length };
@@ -109,7 +109,7 @@ function splitCaseContent(content) {
     let i = 0, start = 0, parenDepth = 0, caseDepth = 0, currentType = null;
     while (i <= content.length) {
         const ch = content[i];
-        if      (ch === '(') { parenDepth++; i++; continue; }
+        if (ch === '(') { parenDepth++; i++; continue; }
         else if (ch === ')') { parenDepth--; i++; continue; }
         if (parenDepth === 0) {
             if (matchKeyword(content, i, 'CASE')) { caseDepth++; i += 4; continue; }
@@ -275,10 +275,10 @@ function formatSQL(sql) {
         while (i < s.length) {
             if (s[i] === '(') { parenDepth++; r += s[i++]; continue; }
             if (s[i] === ')') { parenDepth--; r += s[i++]; continue; }
-            if (matchKeyword(s, i, 'CASE'))                       { caseDepth++; r += 'CASE'; i += 4; continue; }
-            if (caseDepth > 0 && matchKeyword(s, i, 'END'))       { caseDepth--; r += 'END';  i += 3; continue; }
+            if (matchKeyword(s, i, 'CASE')) { caseDepth++; r += 'CASE'; i += 4; continue; }
+            if (caseDepth > 0 && matchKeyword(s, i, 'END')) { caseDepth--; r += 'END'; i += 3; continue; }
             if (parenDepth === 0 && caseDepth === 0 && matchKeyword(s, i, 'AND')) { r += '\n    AND'; i += 3; continue; }
-            if (parenDepth === 0 && caseDepth === 0 && matchKeyword(s, i, 'OR'))  { r += '\n    OR';  i += 2; continue; }
+            if (parenDepth === 0 && caseDepth === 0 && matchKeyword(s, i, 'OR')) { r += '\n    OR'; i += 2; continue; }
             r += s[i++];
         }
         s = r;
@@ -316,7 +316,7 @@ function formatSQL(sql) {
 
     // Empty line around UNION / UNION ALL / INTERSECT / EXCEPT
     // If an adjacent line is already a comment, it acts as the separator (no extra blank line)
-    const UNION_LINE  = /^(UNION(?: ALL)?|INTERSECT|EXCEPT)(\s*--.*)?$/i;
+    const UNION_LINE = /^(UNION(?: ALL)?|INTERSECT|EXCEPT)(\s*--.*)?$/i;
     const COMMENT_LINE = /^\s*--/;
     const sqlLines = s.split('\n');
     const out = [];
@@ -336,15 +336,15 @@ function formatSQL(sql) {
 }
 
 const SPECIFIC_PATTERNS = [
-    { re: /\{#[\s\S]*?#\}/g,          key: 'comment'   },
-    { re: /\{%-?[\s\S]*?-?%\}/g,      key: 'jinja'     },
-    { re: /\{\{[\s\S]*?\}\}/g,         key: 'jinja'     },
-    { re: /--[^\n]*/g,                  key: 'comment'   },
+    { re: /\{#[\s\S]*?#\}/g, key: 'comment' },
+    { re: /\{%-?[\s\S]*?-?%\}/g, key: 'jinja' },
+    { re: /\{\{[\s\S]*?\}\}/g, key: 'jinja' },
+    { re: /--[^\n]*/g, key: 'comment' },
     { re: /(?<=->>?[ \t]*)('[^']*'|"[^"]*")/g, key: 'json_path' },
-    { re: /'[^']*'/g,                  key: 'string'    },
-    { re: /"[^"]*"/g,                  key: 'string'    },
-    { re: /:[a-zA-Z_][a-zA-Z0-9_]*/g,  key: 'param'     },
-    { re: /\b(TRUE|FALSE)\b/gi,        key: 'boolean'   },
+    { re: /'[^']*'/g, key: 'string' },
+    { re: /"[^"]*"/g, key: 'string' },
+    { re: /:[a-zA-Z_][a-zA-Z0-9_]*/g, key: 'param' },
+    { re: /\b(TRUE|FALSE)\b/gi, key: 'boolean' },
     {
         re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH)\b/gi,
         key: 'keyword'
@@ -353,8 +353,8 @@ const SPECIFIC_PATTERNS = [
         re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE)\s*(?=\()/gi,
         key: 'function'
     },
-    { re: /\b\d+(\.\d+)?\b/g,           key: 'number'    },
-    { re: /->>|->|!=|<>|<=|>=|[<>=]/g,  key: 'operator'  },
+    { re: /\b\d+(\.\d+)?\b/g, key: 'number' },
+    { re: /->>|->|!=|<>|<=|>=|[<>=]/g, key: 'operator' },
 ];
 
 const IDENT_RE = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
@@ -477,7 +477,7 @@ function activate(context) {
         const indentMatch = original.match(/\n([ \t]+)/);
         const indent = indentMatch ? indentMatch[1] : '    ';
 
-        const formatted = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n');
+        const formatted = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n') + '\n';
 
         if (formatted === original) return;
 
@@ -539,5 +539,5 @@ function activate(context) {
     vscode.window.visibleTextEditors.forEach(applyDecorations);
 }
 
-function deactivate() {}
+function deactivate() { }
 module.exports = { activate, deactivate };
