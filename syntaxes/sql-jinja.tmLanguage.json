@@ -1,0 +1,125 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SQL (Jinja)",
+  "scopeName": "source.sql-jinja",
+  "patterns": [
+    { "include": "#jinja-comment" },
+    { "include": "#jinja-block" },
+    { "include": "#jinja-variable" },
+    { "include": "#sql-comment-line" },
+    { "include": "#sql-comment-block" },
+    { "include": "#sql-boolean" },
+    { "include": "#sql-json-path" },
+    { "include": "#sql-string-single" },
+    { "include": "#sql-string-double" },
+    { "include": "#sql-named-param" },
+    { "include": "#sql-keyword" },
+    { "include": "#sql-function" },
+    { "include": "#sql-number" },
+    { "include": "#sql-operator" }
+  ],
+  "repository": {
+    "jinja-comment": {
+      "begin": "\\{#",
+      "end": "#\\}",
+      "name": "comment.block.jinja"
+    },
+    "jinja-block": {
+      "begin": "\\{%-?",
+      "end": "-?%\\}",
+      "name": "meta.block.jinja",
+      "contentName": "source.jinja.block",
+      "patterns": [
+        {
+          "match": "\\b(if|elif|else|endif|for|endfor|in|not|and|or|is|macro|endmacro|call|endcall|filter|endfilter|set|block|endblock|extends|include|import|from|with|without|context|recursive|loop)\\b",
+          "name": "keyword.control.jinja"
+        },
+        {
+          "match": "\\b(true|false|none|True|False|None)\\b",
+          "name": "constant.language.jinja"
+        },
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single.jinja"
+        },
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.jinja"
+        },
+        {
+          "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+          "name": "constant.numeric.jinja"
+        },
+        {
+          "match": "\\b\\w+\\b",
+          "name": "variable.other.jinja"
+        }
+      ]
+    },
+    "jinja-variable": {
+      "begin": "\\{\\{",
+      "end": "\\}\\}",
+      "name": "meta.variable.jinja",
+      "contentName": "source.jinja.variable",
+      "patterns": [
+        {
+          "match": "\\|\\s*\\b\\w+\\b",
+          "name": "support.function.jinja"
+        },
+        {
+          "match": "\\b\\w+\\b",
+          "name": "variable.other.jinja"
+        }
+      ]
+    },
+    "sql-comment-line": {
+      "match": "--.*$",
+      "name": "comment.line.double-dash.sql"
+    },
+    "sql-comment-block": {
+      "begin": "/\\*",
+      "end": "\\*/",
+      "name": "comment.block.sql"
+    },
+    "sql-boolean": {
+      "match": "(?i)\\b(TRUE|FALSE)\\b",
+      "name": "constant.language.boolean.sql"
+    },
+    "sql-json-path": {
+      "match": "(?<=->>?\\s*)('[^']*'|\"[^\"]*\")",
+      "name": "string.quoted.json-path.sql"
+    },
+    "sql-string-single": {
+      "begin": "'",
+      "end": "'",
+      "name": "string.quoted.single.sql"
+    },
+    "sql-string-double": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.sql"
+    },
+    "sql-named-param": {
+      "match": ":[a-zA-Z_][a-zA-Z0-9_]*",
+      "name": "variable.parameter.sql"
+    },
+    "sql-keyword": {
+      "match": "(?i)\\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|EXPLAIN|PARTITION|OVER|WINDOW|ROWS|RANGE|PRECEDING|FOLLOWING|CURRENT|ROW|UNBOUNDED|ASC|DESC|NULLS|FIRST|LAST|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|CONSTRAINT|UNIQUE|CHECK|INDEX|IF|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH)\\b",
+      "name": "keyword.other.sql"
+    },
+    "sql-function": {
+      "match": "(?i)\\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|ISNULL|NVL|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|CHAR_LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|LOCATE|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CURRENT_DATE|CURRENT_TIMESTAMP|CAST|CONVERT|GROUP_CONCAT|STRING_AGG|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|NTILE|PERCENT_RANK|CUME_DIST|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|SQRT|GREATEST|LEAST|CHAR|ASCII|HEX|UNHEX|MD5|SHA1|SHA2|UUID|JSON_EXTRACT|JSON_UNQUOTE|JSON_OBJECT|JSON_ARRAY|JSON_ARRAYAGG|JSON_OBJECTAGG|TIMESTAMPDIFF|EXTRACT|TO_DATE|TO_CHAR|TO_NUMBER|NVL2|DECODE|LISTAGG)\\s*(?=\\()",
+      "name": "support.function.sql"
+    },
+    "sql-number": {
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b",
+      "name": "constant.numeric.sql"
+    },
+    "sql-operator": {
+      "match": "(->>|->|!=|<>|<=|>=|<|>|=|\\|\\||::)",
+      "name": "keyword.operator.sql"
+    }
+  }
+}

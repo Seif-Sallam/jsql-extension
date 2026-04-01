@@ -1,0 +1,39 @@
+{
+  "name": "jsql-syntax",
+  "displayName": "JSql Syntax Highlighting",
+  "description": "SQL + Jinja2 syntax highlighting for JSql query patterns in Python",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.74.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["*"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "jsqlSyntax.selectTheme",
+        "title": "JSql: Select Theme"
+      },
+      {
+        "command": "jsqlSyntax.formatSQL",
+        "title": "JSql: Format SQL"
+      }
+    ],
+    "configuration": {
+      "title": "JSql Syntax",
+      "properties": {
+        "jsqlSyntax.theme": {
+          "type": "string",
+          "default": "dracula",
+          "enum": ["dracula", "monokai", "one-dark"],
+          "enumDescriptions": [
+            "Dracula — cyan keywords, pink functions, green strings",
+            "Monokai — red keywords, green functions, yellow strings",
+            "One Dark — purple keywords, blue functions, green strings"
+          ],
+          "description": "Color theme for JSql syntax highlighting"
+        }
+      }
+    }
+  }
+}
