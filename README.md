@@ -1,8 +1,10 @@
-## JSql Syntax Highlighting (VS Code)
+# This entire thing is vibe-coded btw, it may contain some weird stuff, but it is mostly right
+
+# JSql Syntax Highlighting (VS Code)
 
 SQL + Jinja2 highlighting, formatting, and keyword diagnostics for **JSql-style SQL blocks embedded in Python**.
 
-### What it does
+## What it does
 
 - **Highlights SQL inside Python triple-quoted strings** (`'''...'''` / `"""..."""`) when the content looks like SQL (e.g., starts with `SELECT`, `WITH`, `INSERT`, etc.).
 - **Highlights Jinja2** inside those SQL blocks (`{# ... #}`, `{% ... %}`, `{{ ... }}`).
@@ -10,13 +12,29 @@ SQL + Jinja2 highlighting, formatting, and keyword diagnostics for **JSql-style 
 - **Formats SQL in-place** (uppercase keywords, splits clauses to lines, expands long `SELECT` lists, formats `CASE` blocks, and more).
 - **Includes a small set of highlight themes** you can switch between.
 
-### Install (local/dev)
+## Install (local/dev)
 
-This repo is a minimal local extension (no publishing workflow included here). To run it:
+Run this command in a terminal that has the file: `jsql-syntax.vsix`
 
-1. Open the folder in VS Code.
-2. Press `F5` to launch an **Extension Development Host** window.
-3. In the dev host, open a Python file and add a JSql block (examples below).
+```bash
+code --install-extension jsql-syntax.vsix
+```
+
+or if you have cursor
+
+```bash
+cursor --install-extension jsql-syntax.vsix
+```
+
+Reload the window if you haven't already!.
+
+### Another way
+
+Use the UI:
+
+1. CMD + SHIFT + P to open the menu, and search for `Extensions: Install From VSIX`
+2. Then select the extension file.
+
 
 ### Build a `.vsix` (local)
 
@@ -49,41 +67,14 @@ cat ./sample.sql | npm run playground -- --stdin
 
 The test runner uses Node's built-in `assert` module and covers formatter regressions such as `UNION` spacing, `SELECT` list expansion, `CASE` formatting, and SQL-range detection inside Python triple-quoted strings.
 
-### Build a `.vsix` (GitHub Actions)
-
-This repo includes a workflow at `.github/workflows/package-vsix.yml` that packages a `.vsix` on every push and PR.
-
-Steps:
-
-1. Push your changes to GitHub.
-2. Open your repo in GitHub → **Actions** tab → select **Package VSIX**.
-3. Open the latest run and download the artifact named **`jsql-syntax-vsix`**.
-4. Extract it to get `jsql-syntax.vsix`, then install it via **Extensions: Install from VSIX...** in VS Code.
-
 ### Usage
 
-Create a Python triple-quoted string whose contents start with SQL:
-
-```python
-query = """
-WITH users AS (
-    SELECT id, email
-    FROM app.users
-)
-SELECT u.id, u.email
-FROM users u
-WHERE u.email ILIKE :email
-  {% if condition %}
-  AND u.condition = :condition
-  {% endif %}
-"""
-```
-
-The extension recognizes SQL blocks by scanning triple-quoted strings and checking whether the string (optionally after leading comments) begins with one of:
-
-- `SELECT`, `INSERT`, `UPDATE`, `DELETE`
-- `WITH`
-- `CREATE`, `ALTER`, `DROP`
+* After putting your cursor on a SQL block, you can use the command `JSql: Format SQL` and it would be formatting it to a nice format.
+* You can also change the theme using the command `JSql: Change theme` and choose from the available themes.
+* Warnings will come off with these simple errors:
+   * Bad keyword spelling
+   * Missing commas in the SELECT c1, c2, c3 statements
+   * Missing closing brackets
 
 ### Commands
 
@@ -109,7 +100,7 @@ You can set it in Settings UI or in `settings.json`:
 ### Notes & limitations
 
 - **Python-only**: the extension currently applies to files where VS Code’s language mode is `python`.
-- **Triple-quoted strings only**: it highlights SQL inside `'''...'''` and `"""..."""` blocks.
+- **Triple-quoted strings only**: it highlights SQL inside `'''...'''` and `"""..."""` blocks, anything smaller than that that fits in one line is not really worth it.
 - **Heuristic detection**: a block is treated as SQL only if it “looks like SQL” at the start (after optional leading comments). If your SQL begins with something else, it won’t activate.
 - **Not a full SQL parser**: highlighting/formatting are pragmatic and optimized for readability in embedded-query workflows.
 
@@ -121,4 +112,4 @@ You can set it in Settings UI or in `settings.json`:
 
 ### License
 
-Unlicensed / internal use (add a LICENSE file if you plan to share or publish).
+MIT (Just because anyone can do anything basically)
