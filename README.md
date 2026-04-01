@@ -30,6 +30,25 @@ Then install the generated file in VS Code:
 
 - Command Palette → **Extensions: Install from VSIX...** → select `jsql-syntax.vsix`
 
+### Formatter Playground And Tests
+
+From the repo root:
+
+```bash
+npm test
+npm run playground
+```
+
+Useful playground variants:
+
+```bash
+npm run playground -- --case union-comments
+npm run playground -- --file ./sample.sql
+cat ./sample.sql | npm run playground -- --stdin
+```
+
+The test runner uses Node's built-in `assert` module and covers formatter regressions such as `UNION` spacing, `SELECT` list expansion, `CASE` formatting, and SQL-range detection inside Python triple-quoted strings.
+
 ### Build a `.vsix` (GitHub Actions)
 
 This repo includes a workflow at `.github/workflows/package-vsix.yml` that packages a `.vsix` on every push and PR.

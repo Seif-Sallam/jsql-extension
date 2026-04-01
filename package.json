@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
+  "scripts": {
+    "playground": "node scripts/playground.js",
+    "test": "node scripts/test.js"
+  },
   "engines": { "vscode": "^1.74.0" },
   "categories": ["Programming Languages"],
   "activationEvents": ["*"],

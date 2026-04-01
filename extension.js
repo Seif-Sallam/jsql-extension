@@ -233,6 +233,22 @@ function expandBracketedConditions(sql) {
 
 // ────────────────────────────────────────────────────────────────────────────
 
+function detectUnionCommentAdjacency(sql) {
+    // Scan the original SQL (before any processing) to find which UNION/INTERSECT/EXCEPT
+    // occurrences have a standalone comment line immediately before or after them.
+    const UNION_RE = /^(UNION(?: ALL)?|INTERSECT|EXCEPT)\b/i;
+    const COMMENT_RE = /^--/;
+    const lines = sql.split('\n').map(l => l.trim()).filter(l => l);
+    const pre = [], post = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (UNION_RE.test(lines[i])) {
+            pre.push(i > 0 && COMMENT_RE.test(lines[i - 1]));
+            post.push(i < lines.length - 1 && COMMENT_RE.test(lines[i + 1]));
+        }
+    }
+    return { pre, post };
+}
+
 function splitTopLevelCommas(str) {
     const parts = [];
     let depth = 0, start = 0;
@@ -248,7 +264,30 @@ function splitTopLevelCommas(str) {
     return parts.filter(p => p);
 }
 
+function splitTrailingInlineComment(line) {
+    const match = line.match(/^(.*?)(\s+--.*)$/);
+    if (!match) return null;
+    const code = match[1].trimEnd();
+    const comment = match[2].trimStart();
+    if (!code) return null;
+    return { code, comment };
+}
+
+function splitUnionLineForFollowingComment(line) {
+    const match = line.match(/^(.*?\s--.*?)(\s--.*)$/);
+    if (match) {
+        return {
+            code: match[1].trimEnd(),
+            comment: match[2].trimStart(),
+        };
+    }
+    return splitTrailingInlineComment(line);
+}
+
 function formatSQL(sql) {
+    // Scan original SQL for UNION-comment adjacency before any processing destroys line structure
+    const unionAdj = detectUnionCommentAdjacency(sql);
+
     // Protect opaque regions from modification
     const saved = [];
     const OPAQUE_RE = /\{#[\s\S]*?#\}|\{%-?[\s\S]*?-?%\}|\{\{[\s\S]*?\}\}|--[^\n]*|'[^']*'|"[^"]*"/g;
@@ -315,19 +354,42 @@ function formatSQL(sql) {
     s = s.replace(/\x00(\d+)\x00/g, (_, i) => saved[+i]);
 
     // Empty line around UNION / UNION ALL / INTERSECT / EXCEPT
-    // If an adjacent line is already a comment, it acts as the separator (no extra blank line)
-    const UNION_LINE = /^(UNION(?: ALL)?|INTERSECT|EXCEPT)(\s*--.*)?$/i;
+    // Use pre-scanned adjacency info (comment positions are lost after whitespace collapse)
+    const UNION_LINE = /^\s*(UNION(?: ALL)?|INTERSECT|EXCEPT)(\s*--.*)?$/i;
     const COMMENT_LINE = /^\s*--/;
     const sqlLines = s.split('\n');
     const out = [];
+    let unionIdx = 0;
     for (let i = 0; i < sqlLines.length; i++) {
-        const line = sqlLines[i];
+        let line = sqlLines[i];
         if (UNION_LINE.test(line)) {
-            const prevComment = i > 0 && COMMENT_LINE.test(sqlLines[i - 1]);
-            const nextComment = i < sqlLines.length - 1 && COMMENT_LINE.test(sqlLines[i + 1]);
+            const prevComment =
+                (i > 0 && COMMENT_LINE.test(sqlLines[i - 1])) ||
+                !!unionAdj.pre[unionIdx];
+            const nextComment =
+                (i < sqlLines.length - 1 && COMMENT_LINE.test(sqlLines[i + 1])) ||
+                !!unionAdj.post[unionIdx];
+
+            if (prevComment && out.length > 0) {
+                const splitPrev = splitTrailingInlineComment(out[out.length - 1]);
+                if (splitPrev) {
+                    out[out.length - 1] = splitPrev.code;
+                    out.push(splitPrev.comment);
+                }
+            }
+
+            if (nextComment) {
+                const splitCurrent = splitUnionLineForFollowingComment(line);
+                if (splitCurrent) {
+                    line = splitCurrent.code;
+                    sqlLines.splice(i + 1, 0, splitCurrent.comment);
+                }
+            }
+
             if (!prevComment) out.push('');
             out.push(line);
             if (!nextComment) out.push('');
+            unionIdx++;
         } else {
             out.push(line);
         }
@@ -477,7 +539,7 @@ function activate(context) {
         const indentMatch = original.match(/\n([ \t]+)/);
         const indent = indentMatch ? indentMatch[1] : '    ';
 
-        const formatted = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n') + '\n';
+        const formatted = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n');
 
         if (formatted === original) return;
 
