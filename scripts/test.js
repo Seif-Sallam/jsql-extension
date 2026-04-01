@@ -3,7 +3,7 @@
 const assert = require('assert');
 const { loadExtensionInternals } = require('./load-formatter');
 
-const { formatSQL, findSQLRanges } = loadExtensionInternals();
+const { formatSQL, findSQLRanges, detectMissingSelectCommas } = loadExtensionInternals();
 
 const formatCases = [
     {
@@ -114,6 +114,17 @@ const formatCases = [
             'FROM exams',
         ].join('\n'),
     },
+    {
+        name: 'keeps GROUP BY, HAVING, and ORDER BY as distinct clauses in SQL order',
+        input: 'select team, count(*) from matches group by team having count(*) > 1 order by count(*) desc',
+        expected: [
+            'SELECT team, count(*)',
+            'FROM matches',
+            'GROUP BY team',
+            'HAVING count(*) > 1',
+            'ORDER BY count(*) DESC',
+        ].join('\n'),
+    },
 ];
 
 const rangeCases = [
@@ -139,6 +150,97 @@ const rangeCases = [
     },
 ];
 
+const commaWarningCases = [
+    {
+        name: 'warns on missing comma between multiline SELECT columns',
+        input: [
+            'SELECT',
+            '    first_name',
+            '    last_name',
+            'FROM users',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'does not warn when SELECT columns are comma separated',
+        input: [
+            'SELECT',
+            '    first_name,',
+            '    last_name,',
+            '    email',
+            'FROM users',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'does not warn after GROUP BY, HAVING, or ORDER BY',
+        input: [
+            'SELECT',
+            '    team,',
+            '    COUNT(*)',
+            'FROM matches',
+            'GROUP BY team',
+            'HAVING COUNT(*) > 1',
+            'ORDER BY COUNT(*) DESC',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'stops checking once FROM starts, even with JOIN clauses after it',
+        input: [
+            'SELECT',
+            '    u.id,',
+            '    u.email',
+            'FROM users u',
+            'JOIN teams t ON t.id = u.team_id',
+            'WHERE u.active = TRUE',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'does not warn for unformatted SELECT line that already includes FROM before JOINs',
+        input: [
+            'SELECT 1 FROM access_request ar',
+            'LEFT JOIN request_type rt ON ar.id_request_type = rt.id_request_type',
+            'LEFT JOIN status s ON ar.id_status = s.id_status',
+            'WHERE ar.id_user = :id_user',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'does not warn when consecutive SELECT columns are multiline CASE expressions',
+        input: [
+            'SELECT DISTINCT',
+            '    COALESCE(f.name, a.name, p.name, ug.name, CASE',
+            '        WHEN aar.entity_id IS NULL THEN \'All entities of this type in business unit\'',
+            '        ELSE \'Unknown entity\'',
+            '    END) AS entity_name,',
+            '    CASE',
+            '        WHEN aar.entity_id IS NULL THEN TRUE',
+            '        ELSE FALSE',
+            '    END AS is_business_unit_wide',
+            'FROM access_approval_member aam',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'warns when a multiline CASE expression is missing its trailing comma before the next column',
+        input: [
+            'SELECT DISTINCT',
+            '    COALESCE(f.name, a.name, p.name, ug.name, CASE',
+            '        WHEN aar.entity_id IS NULL THEN \'All entities of this type in business unit\'',
+            '        ELSE \'Unknown entity\'',
+            '    END) AS entity_name',
+            '    CASE',
+            '        WHEN aar.entity_id IS NULL THEN TRUE',
+            '        ELSE FALSE',
+            '    END AS is_business_unit_wide',
+            'FROM access_approval_member aam',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+];
+
 function runFormatCases() {
     for (const testCase of formatCases) {
         assert.strictEqual(
@@ -159,10 +261,21 @@ function runRangeCases() {
     }
 }
 
+function runCommaWarningCases() {
+    for (const testCase of commaWarningCases) {
+        assert.strictEqual(
+            detectMissingSelectCommas(testCase.input).length,
+            testCase.expectedCount,
+            `detectMissingSelectCommas failed: ${testCase.name}`
+        );
+    }
+}
+
 function main() {
     runFormatCases();
     runRangeCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length} tests.`);
+    runCommaWarningCases();
+    console.log(`Passed ${formatCases.length + rangeCases.length + commaWarningCases.length} tests.`);
 }
 
 main();

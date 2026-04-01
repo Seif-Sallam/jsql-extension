@@ -421,6 +421,94 @@ const SPECIFIC_PATTERNS = [
 
 const IDENT_RE = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
 const CAPS_WORD_RE = /\b[A-Z][A-Z0-9_]{2,}\b/g;
+const SELECT_START_RE = /^SELECT(?:\s+DISTINCT)?\b/i;
+const SELECT_ONLY_RE = /^SELECT(?:\s+DISTINCT)?\s*$/i;
+const SELECT_PREFIX_RE = /^SELECT(?:\s+DISTINCT)?\s+/i;
+const CLAUSE_START_RE = /^(FROM|WHERE|GROUP BY|HAVING|ORDER BY|LIMIT|OFFSET|UNION(?: ALL)?|INTERSECT|EXCEPT|RETURNING|WINDOW|QUALIFY)\b/i;
+const NON_COLUMN_CONTINUATION_RE = /^(AND|OR|WHEN|THEN|ELSE|END|OVER|FILTER)\b|^[),]/i;
+
+function stripComment(line) {
+    return line.replace(/\s--.*$/, '');
+}
+
+function lineLooksLikeColumnStart(text) {
+    if (!text) return false;
+    if (CLAUSE_START_RE.test(text) || NON_COLUMN_CONTINUATION_RE.test(text)) return false;
+    return /^[A-Za-z_("*`[]/i.test(text);
+}
+
+function lineEndsLikeColumnContinuation(text) {
+    return /(?:[,([]|->>|->|\+|-|\*|\/|%|=|<|>|<>|!=|<=|>=|AND|OR|WHEN|THEN|ELSE|CASE)$/i.test(text);
+}
+
+function splitAtFrom(text) {
+    const match = /\bFROM\b/i.exec(text);
+    if (!match) return null;
+    return {
+        beforeFrom: text.slice(0, match.index).trim(),
+        afterFrom: text.slice(match.index).trim(),
+    };
+}
+
+function detectMissingSelectCommas(sql) {
+    const diagnostics = [];
+    const lines = sql.split('\n');
+    let offset = 0;
+    let inSelect = false;
+    let previousColumn = null;
+
+    for (const rawLine of lines) {
+        const lineOffset = offset;
+        offset += rawLine.length + 1;
+
+        const withoutComment = stripComment(rawLine);
+        const trimmed = withoutComment.trim();
+        if (!trimmed) continue;
+
+        if (!inSelect) {
+            if (!SELECT_START_RE.test(trimmed)) continue;
+            previousColumn = null;
+
+            if (!SELECT_ONLY_RE.test(trimmed)) {
+                const selectRemainder = trimmed.replace(SELECT_PREFIX_RE, '').trim();
+                const inlineSplit = splitAtFrom(selectRemainder);
+                const inlineColumn = inlineSplit ? inlineSplit.beforeFrom : selectRemainder;
+                if (inlineColumn) {
+                    previousColumn = { text: inlineColumn };
+                }
+                inSelect = !inlineSplit;
+            } else {
+                inSelect = true;
+            }
+            continue;
+        }
+
+        const lineSplit = splitAtFrom(trimmed);
+        if (lineSplit) {
+            inSelect = false;
+            previousColumn = null;
+            continue;
+        }
+
+        if (!lineLooksLikeColumnStart(trimmed)) {
+            if (previousColumn) previousColumn = { text: trimmed };
+            continue;
+        }
+
+        if (previousColumn && !previousColumn.text.endsWith(',') && !lineEndsLikeColumnContinuation(previousColumn.text)) {
+            const start = lineOffset + rawLine.indexOf(trimmed);
+            diagnostics.push({
+                start,
+                end: start + trimmed.length,
+                message: 'Possible missing comma between SELECT columns.',
+            });
+        }
+
+        previousColumn = { text: trimmed };
+    }
+
+    return diagnostics;
+}
 
 function findSQLRanges(text) {
     const ranges = [];
@@ -508,6 +596,16 @@ function activate(context) {
                 const absStart = start + cw.index;
                 const range = new vscode.Range(doc.positionAt(absStart), doc.positionAt(absStart + word.length));
                 const diag = new vscode.Diagnostic(range, `Unknown keyword "${word}" — did you mean ${suggestion}?`, vscode.DiagnosticSeverity.Warning);
+                diag.source = 'jsql';
+                docDiagnostics.push(diag);
+            }
+
+            for (const issue of detectMissingSelectCommas(content)) {
+                const range = new vscode.Range(
+                    doc.positionAt(start + issue.start),
+                    doc.positionAt(start + issue.end)
+                );
+                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
                 diag.source = 'jsql';
                 docDiagnostics.push(diag);
             }
@@ -602,4 +700,4 @@ function activate(context) {
 }
 
 function deactivate() { }
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, detectMissingSelectCommas };
