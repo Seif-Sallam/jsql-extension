@@ -284,14 +284,177 @@ function splitUnionLineForFollowingComment(line) {
     return splitTrailingInlineComment(line);
 }
 
+function normalizeStringQuotes(str) {
+    if (!str || (str[0] !== '\'' && str[0] !== '"')) return str;
+
+    const quote = str[0];
+    const inner = str.slice(1, -1);
+
+    if (quote === '\'') {
+        return `"${inner.replace(/"/g, '""')}"`;
+    }
+
+    return str;
+}
+
+function isStandaloneOpaqueToken(text) {
+    return /^\{%-?[\s\S]*?-?%\}$/.test(text) || /^--[^\n]*$/.test(text);
+}
+
+function isJinjaControlTag(text) {
+    return /^\{%-?[\s\S]*?-?%\}$/.test(text);
+}
+
+function isStandaloneAt(sql, start, end) {
+    const lineStart = sql.lastIndexOf('\n', start - 1) + 1;
+    const lineEndIdx = sql.indexOf('\n', end);
+    const lineEnd = lineEndIdx === -1 ? sql.length : lineEndIdx;
+    const before = sql.slice(lineStart, start).trim();
+    const after = sql.slice(end, lineEnd).trim();
+    return !before && !after;
+}
+
+function restoreOpaqueRegions(sql, saved) {
+    return sql.replace(/\x00(\d+)\x00/g, (_, i) => {
+        const item = saved[+i];
+        return item.standalone ? `\x01${i}\x01` : item.text;
+    });
+}
+
+function placeStandaloneOpaqueLines(sql, saved) {
+    const markerRe = /\x01(\d+)\x01/;
+    const out = [];
+
+    for (const rawLine of sql.split('\n')) {
+        const queue = [rawLine];
+
+        while (queue.length > 0) {
+            const line = queue.shift();
+            const match = markerRe.exec(line);
+
+            if (!match) {
+                if (line.trim()) out.push(line.trimEnd());
+                continue;
+            }
+
+            const leadingIndent = line.match(/^([ \t]*)/)[1];
+            const before = line.slice(0, match.index).trimEnd();
+            const after = line.slice(match.index + match[0].length).trim();
+            const standaloneText = saved[+match[1]].text.trim();
+
+            if (before.trim()) out.push(before);
+            out.push(isJinjaControlTag(standaloneText) ? standaloneText : (before.trim() ? '' : leadingIndent) + standaloneText);
+            if (after) queue.unshift(leadingIndent + after);
+        }
+    }
+
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function placeJinjaControlTagsOnOwnLines(sql) {
+    const controlRe = /\{%-?[\s\S]*?-?%\}/;
+    const out = [];
+
+    for (const rawLine of sql.split('\n')) {
+        const queue = [rawLine];
+
+        while (queue.length > 0) {
+            const line = queue.shift();
+            const match = controlRe.exec(line);
+
+            if (!match) {
+                if (line.trim()) out.push(line.trimEnd());
+                continue;
+            }
+
+            const leadingIndent = line.match(/^([ \t]*)/)[1];
+            const before = line.slice(0, match.index).trimEnd();
+            const after = line.slice(match.index + match[0].length).trim();
+
+            if (before.trim()) out.push(before);
+            out.push(match[0].trim());
+            if (after) queue.unshift(leadingIndent + after);
+        }
+    }
+
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function getJinjaIndent(lines, index) {
+    const current = lines[index].trim();
+    const isClosing = /^\{%-?\s*(endif|endfor|endblock|endmacro|else|elif)\b/i.test(current);
+
+    const prevSqlIndent = (() => {
+        for (let i = index - 1; i >= 0; i--) {
+            const trimmed = lines[i].trim();
+            if (!trimmed || isJinjaControlTag(trimmed)) continue;
+            return lines[i].match(/^([ \t]*)/)[1];
+        }
+        return '';
+    })();
+
+    const nextSqlIndent = (() => {
+        for (let i = index + 1; i < lines.length; i++) {
+            const trimmed = lines[i].trim();
+            if (!trimmed || isJinjaControlTag(trimmed)) continue;
+            return lines[i].match(/^([ \t]*)/)[1];
+        }
+        return '';
+    })();
+
+    return isClosing ? (prevSqlIndent || nextSqlIndent) : (nextSqlIndent || prevSqlIndent);
+}
+
+function normalizeJinjaControlIndentation(sql) {
+    const lines = sql.split('\n').map(line => line.trimEnd());
+    return lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (!isJinjaControlTag(trimmed)) return line;
+        return getJinjaIndent(lines, index) + trimmed;
+    }).join('\n');
+}
+
+function splitWhereHavingConditions(sql) {
+    return sql.split('\n').flatMap(line => {
+        const lineIndent = line.match(/^([ \t]*)/)[1];
+        const body = line.slice(lineIndent.length);
+        const clauseMatch = /^(WHERE|HAVING)\b\s*(.*)$/i.exec(body);
+        if (!clauseMatch) return [line];
+
+        const keyword = clauseMatch[1].toUpperCase();
+        const clauseBody = clauseMatch[2];
+        let r = '', i = 0, parenDepth = 0, caseDepth = 0;
+
+        while (i < clauseBody.length) {
+            if (clauseBody[i] === '(') { parenDepth++; r += clauseBody[i++]; continue; }
+            if (clauseBody[i] === ')') { parenDepth--; r += clauseBody[i++]; continue; }
+            if (matchKeyword(clauseBody, i, 'CASE')) { caseDepth++; r += 'CASE'; i += 4; continue; }
+            if (caseDepth > 0 && matchKeyword(clauseBody, i, 'END')) { caseDepth--; r += 'END'; i += 3; continue; }
+            if (parenDepth === 0 && caseDepth === 0 && matchKeyword(clauseBody, i, 'AND')) { r += '\n' + lineIndent + '    AND'; i += 3; continue; }
+            if (parenDepth === 0 && caseDepth === 0 && matchKeyword(clauseBody, i, 'OR')) { r += '\n' + lineIndent + '    OR'; i += 2; continue; }
+            r += clauseBody[i++];
+        }
+
+        const parts = r.split('\n');
+        parts[0] = lineIndent + keyword + (parts[0].trim() ? ' ' + parts[0].trim() : '');
+        return parts.map(part => part.trimEnd());
+    }).join('\n');
+}
+
 function formatSQL(sql) {
     // Scan original SQL for UNION-comment adjacency before any processing destroys line structure
     const unionAdj = detectUnionCommentAdjacency(sql);
 
     // Protect opaque regions from modification
     const saved = [];
-    const OPAQUE_RE = /\{#[\s\S]*?#\}|\{%-?[\s\S]*?-?%\}|\{\{[\s\S]*?\}\}|--[^\n]*|'[^']*'|"[^"]*"/g;
-    let s = sql.replace(OPAQUE_RE, m => { saved.push(m); return `\x00${saved.length - 1}\x00`; });
+    const OPAQUE_RE = /\{#[\s\S]*?#\}|\{%-?[\s\S]*?-?%\}|\{\{[\s\S]*?\}\}|--[^\n]*|'[^']*'|"[^"]*"|:[a-zA-Z_][a-zA-Z0-9_]*/g;
+    let s = sql.replace(OPAQUE_RE, (m, offset, whole) => {
+        saved.push({
+            text: normalizeStringQuotes(m),
+            standalone: isStandaloneOpaqueToken(m) && isStandaloneAt(whole, offset, offset + m.length),
+        });
+        return `\x00${saved.length - 1}\x00`;
+    });
 
     // Collapse whitespace
     s = s.replace(/\s+/g, ' ').trim();
@@ -350,8 +513,12 @@ function formatSQL(sql) {
     // Indent CTE bodies (WITH name AS (...) → body indented one level)
     s = formatCTEBlocks(s);
 
-    // Restore opaque regions first so comment lines are visible for UNION spacing
-    s = s.replace(/\x00(\d+)\x00/g, (_, i) => saved[+i]);
+    // Restore opaque regions and put standalone Jinja/comment lines back on their own lines.
+    s = placeStandaloneOpaqueLines(restoreOpaqueRegions(s, saved), saved);
+    s = placeJinjaControlTagsOnOwnLines(s);
+    s = splitWhereHavingConditions(s);
+    s = expandBracketedConditions(s);
+    s = normalizeJinjaControlIndentation(s);
 
     // Empty line around UNION / UNION ALL / INTERSECT / EXCEPT
     // Use pre-scanned adjacency info (comment positions are lost after whitespace collapse)
@@ -634,7 +801,13 @@ function findSQLRanges(text) {
         const start = m.index + quote.length;
         const end = text.indexOf(quote, start);
         if (end !== -1 && SQL_START.test(text.slice(start, end))) {
-            ranges.push({ start, end });
+            ranges.push({
+                start,
+                end,
+                fullStart: m.index,
+                fullEnd: end + quote.length,
+                quote,
+            });
             TRIPLE.lastIndex = end + quote.length;
         }
     }
@@ -797,7 +970,7 @@ function activate(context) {
         const doc = editor.document;
         const text = doc.getText();
         const cursorOffset = doc.offsetAt(editor.selection.active);
-        const sqlRange = findSQLRanges(text).find(r => r.start <= cursorOffset && cursorOffset <= r.end);
+        const sqlRange = findSQLRanges(text).find(r => r.fullStart <= cursorOffset && cursorOffset <= r.fullEnd);
 
         if (!sqlRange) {
             vscode.window.showInformationMessage('Cursor is not inside a JSql block.');
@@ -810,12 +983,13 @@ function activate(context) {
         const indentMatch = original.match(/\n([ \t]+)/);
         const indent = indentMatch ? indentMatch[1] : '    ';
 
-        const formatted = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n');
+        const formattedBody = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n');
+        const formatted = `'''${formattedBody}\n'''`;
 
-        if (formatted === original) return;
+        if (formatted === text.slice(sqlRange.fullStart, sqlRange.fullEnd)) return;
 
         const edit = new vscode.WorkspaceEdit();
-        edit.replace(doc.uri, new vscode.Range(doc.positionAt(sqlRange.start), doc.positionAt(sqlRange.end)), formatted);
+        edit.replace(doc.uri, new vscode.Range(doc.positionAt(sqlRange.fullStart), doc.positionAt(sqlRange.fullEnd)), formatted);
         vscode.workspace.applyEdit(edit);
     }, null, context.subscriptions);
 
