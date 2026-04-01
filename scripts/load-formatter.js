@@ -18,7 +18,7 @@ function loadExtensionInternals() {
     };
 
     vm.runInNewContext(
-        `${code}\nmodule.exports.__test = { formatSQL, findSQLRanges, detectUnionCommentAdjacency, detectMissingSelectCommas };`,
+        `${code}\nmodule.exports.__test = { formatSQL, findSQLRanges, detectUnionCommentAdjacency, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets };`,
         sandbox,
         { filename: extensionPath }
     );

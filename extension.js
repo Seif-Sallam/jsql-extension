@@ -510,6 +510,120 @@ function detectMissingSelectCommas(sql) {
     return diagnostics;
 }
 
+function buildOpaqueMask(sql) {
+    const opaque = new Array(sql.length).fill(false);
+    for (let i = 0; i < sql.length; i++) {
+        if (sql[i] === '-' && sql[i + 1] === '-') {
+            while (i < sql.length && sql[i] !== '\n') opaque[i++] = true;
+            i--;
+            continue;
+        }
+
+        if (sql[i] === '\'' || sql[i] === '"') {
+            const quote = sql[i];
+            opaque[i] = true;
+            i++;
+            while (i < sql.length) {
+                opaque[i] = true;
+                if (sql[i] === quote) {
+                    if (sql[i + 1] === quote) {
+                        opaque[i + 1] = true;
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                i++;
+            }
+        }
+    }
+    return opaque;
+}
+
+function findMatchingBracket(sql, cursorOffset) {
+    const pairs = {
+        '(': ')',
+        '[': ']',
+        '{': '}',
+        ')': '(',
+        ']': '[',
+        '}': '{',
+    };
+    const opening = new Set(['(', '[', '{']);
+    const closing = new Set([')', ']', '}']);
+    const opaque = buildOpaqueMask(sql);
+
+    const candidates = [cursorOffset, cursorOffset - 1];
+    let bracketIndex = -1;
+    let bracket = null;
+    for (const idx of candidates) {
+        if (idx < 0 || idx >= sql.length || opaque[idx]) continue;
+        if (pairs[sql[idx]]) {
+            bracketIndex = idx;
+            bracket = sql[idx];
+            break;
+        }
+    }
+    if (bracketIndex === -1) return null;
+
+    if (opening.has(bracket)) {
+        let depth = 1;
+        for (let i = bracketIndex + 1; i < sql.length; i++) {
+            if (opaque[i]) continue;
+            if (sql[i] === bracket) depth++;
+            else if (sql[i] === pairs[bracket]) depth--;
+            if (depth === 0) return { start: bracketIndex, end: i };
+        }
+        return { unmatched: bracketIndex };
+    }
+
+    if (closing.has(bracket)) {
+        let depth = 1;
+        for (let i = bracketIndex - 1; i >= 0; i--) {
+            if (opaque[i]) continue;
+            if (sql[i] === bracket) depth++;
+            else if (sql[i] === pairs[bracket]) depth--;
+            if (depth === 0) return { start: i, end: bracketIndex };
+        }
+        return { unmatched: bracketIndex };
+    }
+
+    return null;
+}
+
+function findUnmatchedBrackets(sql) {
+    const unmatched = [];
+    const opaque = buildOpaqueMask(sql);
+    const stack = [];
+    const openingToClosing = { '(': ')', '[': ']', '{': '}' };
+    const closingToOpening = { ')': '(', ']': '[', '}': '{' };
+
+    for (let i = 0; i < sql.length; i++) {
+        if (opaque[i]) continue;
+        const ch = sql[i];
+
+        if (openingToClosing[ch]) {
+            stack.push({ ch, index: i });
+            continue;
+        }
+
+        if (closingToOpening[ch]) {
+            const expected = closingToOpening[ch];
+            if (stack.length > 0 && stack[stack.length - 1].ch === expected) {
+                stack.pop();
+            } else {
+                unmatched.push(i);
+            }
+        }
+    }
+
+    while (stack.length > 0) {
+        unmatched.push(stack.pop().index);
+    }
+
+    return unmatched.sort((a, b) => a - b);
+}
+
 function findSQLRanges(text) {
     const ranges = [];
     const TRIPLE = /('''|""")/g;
@@ -537,6 +651,22 @@ function buildDecorations(themeName) {
 function activate(context) {
     const cfg = () => vscode.workspace.getConfiguration('jsqlSyntax');
     let dec = buildDecorations(cfg().get('theme', 'dracula'));
+    let bracketDec = vscode.window.createTextEditorDecorationType({
+        border: '1px solid',
+        borderColor: new vscode.ThemeColor('editorBracketMatch.border'),
+        backgroundColor: new vscode.ThemeColor('editorBracketMatch.background'),
+        borderRadius: '2px',
+        overviewRulerColor: new vscode.ThemeColor('editorBracketMatch.border'),
+        overviewRulerLane: vscode.OverviewRulerLane.Right,
+    });
+    let bracketErrorDec = vscode.window.createTextEditorDecorationType({
+        border: '1px solid',
+        borderColor: new vscode.ThemeColor('editorError.foreground'),
+        backgroundColor: 'rgba(255, 0, 0, 0.18)',
+        borderRadius: '2px',
+        overviewRulerColor: new vscode.ThemeColor('editorError.foreground'),
+        overviewRulerLane: vscode.OverviewRulerLane.Right,
+    });
 
     const diagnostics = vscode.languages.createDiagnosticCollection('jsqlSyntax');
     context.subscriptions.push(diagnostics);
@@ -547,8 +677,11 @@ function activate(context) {
         const text = doc.getText();
         const collected = Object.fromEntries(Object.keys(dec).map(k => [k, []]));
         const docDiagnostics = [];
+        const bracketRanges = [];
+        const bracketErrorRanges = [];
+        const sqlRanges = findSQLRanges(text);
 
-        for (const { start, end } of findSQLRanges(text)) {
+        for (const { start, end } of sqlRanges) {
             const content = text.slice(start, end);
 
             const occupied = new Set();
@@ -609,11 +742,51 @@ function activate(context) {
                 diag.source = 'jsql';
                 docDiagnostics.push(diag);
             }
+
+            for (const idx of findUnmatchedBrackets(content)) {
+                const range = new vscode.Range(
+                    doc.positionAt(start + idx),
+                    doc.positionAt(start + idx + 1)
+                );
+                bracketErrorRanges.push(range);
+                const diag = new vscode.Diagnostic(
+                    range,
+                    'Unmatched bracket in SQL expression.',
+                    vscode.DiagnosticSeverity.Error
+                );
+                diag.source = 'jsql';
+                docDiagnostics.push(diag);
+            }
+        }
+
+        for (const selection of editor.selections) {
+            if (!selection.isEmpty) continue;
+            const cursorOffset = doc.offsetAt(selection.active);
+            const sqlRange = sqlRanges.find(r => r.start <= cursorOffset && cursorOffset <= r.end);
+            if (!sqlRange) continue;
+
+            const content = text.slice(sqlRange.start, sqlRange.end);
+            const match = findMatchingBracket(content, cursorOffset - sqlRange.start);
+            if (!match) continue;
+            if (typeof match.unmatched === 'number') continue;
+
+            bracketRanges.push(
+                new vscode.Range(
+                    doc.positionAt(sqlRange.start + match.start),
+                    doc.positionAt(sqlRange.start + match.start + 1)
+                ),
+                new vscode.Range(
+                    doc.positionAt(sqlRange.start + match.end),
+                    doc.positionAt(sqlRange.start + match.end + 1)
+                )
+            );
         }
 
         for (const [key, decoration] of Object.entries(dec)) {
             editor.setDecorations(decoration, collected[key]);
         }
+        editor.setDecorations(bracketDec, bracketRanges);
+        editor.setDecorations(bracketErrorDec, bracketErrorRanges);
         diagnostics.set(doc.uri, docDiagnostics);
     }
 
@@ -687,17 +860,40 @@ function activate(context) {
         if (!e.affectsConfiguration('jsqlSyntax.theme')) return;
         Object.values(dec).forEach(d => d.dispose());
         dec = buildDecorations(cfg().get('theme', 'dracula'));
+        bracketDec.dispose();
+        bracketErrorDec.dispose();
+        bracketDec = vscode.window.createTextEditorDecorationType({
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('editorBracketMatch.border'),
+            backgroundColor: new vscode.ThemeColor('editorBracketMatch.background'),
+            borderRadius: '2px',
+            overviewRulerColor: new vscode.ThemeColor('editorBracketMatch.border'),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        });
+        bracketErrorDec = vscode.window.createTextEditorDecorationType({
+            border: '1px solid',
+            borderColor: new vscode.ThemeColor('editorError.foreground'),
+            backgroundColor: 'rgba(255, 0, 0, 0.18)',
+            borderRadius: '2px',
+            overviewRulerColor: new vscode.ThemeColor('editorError.foreground'),
+            overviewRulerLane: vscode.OverviewRulerLane.Right,
+        });
         vscode.window.visibleTextEditors.forEach(applyDecorations);
     }, null, context.subscriptions);
 
     vscode.window.onDidChangeActiveTextEditor(applyDecorations, null, context.subscriptions);
+    vscode.window.onDidChangeTextEditorSelection(({ textEditor }) => {
+        applyDecorations(textEditor);
+    }, null, context.subscriptions);
     vscode.workspace.onDidChangeTextDocument(({ document }) => {
         const editor = vscode.window.visibleTextEditors.find(e => e.document === document);
         if (editor) applyDecorations(editor);
     }, null, context.subscriptions);
 
+    context.subscriptions.push(bracketDec);
+    context.subscriptions.push(bracketErrorDec);
     vscode.window.visibleTextEditors.forEach(applyDecorations);
 }
 
 function deactivate() { }
-module.exports = { activate, deactivate, detectMissingSelectCommas };
+module.exports = { activate, deactivate, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets };

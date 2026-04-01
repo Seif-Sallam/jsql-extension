@@ -3,7 +3,7 @@
 const assert = require('assert');
 const { loadExtensionInternals } = require('./load-formatter');
 
-const { formatSQL, findSQLRanges, detectMissingSelectCommas } = loadExtensionInternals();
+const { formatSQL, findSQLRanges, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets } = loadExtensionInternals();
 
 const formatCases = [
     {
@@ -241,6 +241,40 @@ const commaWarningCases = [
     },
 ];
 
+const bracketCases = [
+    {
+        name: 'finds matching parentheses in nested SQL expressions',
+        input: 'COALESCE(a, (b + c), d)',
+        cursorOffset: 'COALESCE'.length,
+        expected: { start: 8, end: 22 },
+    },
+    {
+        name: 'ignores parentheses inside quoted strings',
+        input: "CONCAT('(' , value, ')')",
+        cursorOffset: 6,
+        expected: { start: 6, end: 23 },
+    },
+    {
+        name: 'returns unmatched bracket when no closing bracket exists',
+        input: 'COALESCE(a, (b + c, d)',
+        cursorOffset: 'COALESCE'.length,
+        expected: { unmatched: 8 },
+    },
+];
+
+const unmatchedBracketCases = [
+    {
+        name: 'finds unmatched opening brackets without cursor context',
+        input: 'SELECT (a + (b * c) FROM t',
+        expected: [7],
+    },
+    {
+        name: 'finds unmatched closing brackets without cursor context',
+        input: 'SELECT a + b) FROM t',
+        expected: [12],
+    },
+];
+
 function runFormatCases() {
     for (const testCase of formatCases) {
         assert.strictEqual(
@@ -271,11 +305,33 @@ function runCommaWarningCases() {
     }
 }
 
+function runBracketCases() {
+    for (const testCase of bracketCases) {
+        assert.strictEqual(
+            JSON.stringify(findMatchingBracket(testCase.input, testCase.cursorOffset)),
+            JSON.stringify(testCase.expected),
+            `findMatchingBracket failed: ${testCase.name}`
+        );
+    }
+}
+
+function runUnmatchedBracketCases() {
+    for (const testCase of unmatchedBracketCases) {
+        assert.strictEqual(
+            JSON.stringify(findUnmatchedBrackets(testCase.input)),
+            JSON.stringify(testCase.expected),
+            `findUnmatchedBrackets failed: ${testCase.name}`
+        );
+    }
+}
+
 function main() {
     runFormatCases();
     runRangeCases();
     runCommaWarningCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + commaWarningCases.length} tests.`);
+    runBracketCases();
+    runUnmatchedBracketCases();
+    console.log(`Passed ${formatCases.length + rangeCases.length + commaWarningCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();
