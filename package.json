@@ -30,8 +30,20 @@
       {
         "command": "jsqlSyntax.scopeDebug",
         "title": "JSql: Debug Scope"
+      },
+      {
+        "command": "jsqlSyntax.addToScope",
+        "title": "JSql: Add to Schema Scope"
       }
     ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "jsqlSyntax.addToScope",
+          "group": "navigation@99"
+        }
+      ]
+    },
     "configuration": {
       "title": "JSql Syntax",
       "properties": {
@@ -55,25 +67,34 @@
           },
           "description": "Workspace-relative glob patterns for Python model files such as tables.py. Parsed __tablename__ and sa.Column definitions are used to color known SQL tables and columns."
         },
-        "jsqlSyntax.scopes": {
+        "jsqlSyntax.schemaSources": {
+          "type": "object",
+          "scope": "resource",
+          "default": {},
+          "description": "Named schema sources. Each key is a name (e.g. \"liblms\"), value is an array of workspace-relative glob patterns pointing to table definition files.",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "jsqlSyntax.prefixMappings": {
           "type": "array",
           "scope": "resource",
           "default": [],
-          "description": "Per-directory schema scopes. Each scope maps a path prefix to a set of table definition file globs. Files under the prefix will only see tables from that scope's files. Unscoped files fall back to tableDefinitionFiles.",
+          "description": "Maps directory prefixes to schema source names. Files under a prefix will only see tables from the mapped source.",
           "items": {
             "type": "object",
             "properties": {
               "prefix": {
                 "type": "string",
-                "description": "Workspace-relative directory prefix, e.g. \"libservice1\""
+                "description": "Workspace-relative directory prefix or **/name glob, e.g. \"src/applms\" or \"**/applms\""
               },
-              "files": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Workspace-relative glob patterns for table definition files under this scope"
+              "source": {
+                "type": "string",
+                "description": "Name of a schema source defined in jsqlSyntax.schemaSources"
               }
             },
-            "required": ["prefix", "files"]
+            "required": ["prefix", "source"]
           }
         },
         "jsqlSyntax.semanticWarnings": {
