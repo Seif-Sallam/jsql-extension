@@ -531,6 +531,17 @@ function formatParenthesizedSubqueries(sql) {
     return result;
 }
 
+function formatInsertValues(sql) {
+    return sql.replace(
+        /^(VALUES)\s*(.+)$/gim,
+        (match, keyword, rest) => {
+            const rows = splitTopLevelCommas(rest);
+            if (rows.length <= 1) return match;
+            return keyword + '\n' + rows.map((r, i) => '    ' + r.trim() + (i < rows.length - 1 ? ',' : '')).join('\n');
+        }
+    );
+}
+
 function splitWhereHavingConditions(sql) {
     return sql.split('\n').flatMap(line => {
         const lineIndent = line.match(/^([ \t]*)/)[1];
@@ -631,6 +642,7 @@ function formatSQL(sql) {
     s = expandBracketedConditions(s);
     s = normalizeJinjaControlIndentation(s);
     s = formatParenthesizedSubqueries(s);
+    s = formatInsertValues(s);
 
     // Empty line around UNION / UNION ALL / INTERSECT / EXCEPT
     // Use pre-scanned adjacency info (comment positions are lost after whitespace collapse)
@@ -684,6 +696,7 @@ const _PATTERNS_HEAD = [
     { re: /(?<=->>?[ \t]*)('[^']*'|"[^"]*")/g, key: 'json_path' },
     { re: /'[^']*'/g, key: 'string' },
     { re: /"[^"]*"/g, key: 'string' },
+    { re: /`[^`]+`/g, key: 'identifier' },
     { re: /:[a-zA-Z_][a-zA-Z0-9_]*/g, key: 'param' },
     { re: /\b(TRUE|FALSE|NULL)\b/gi, key: 'boolean' },
 ];
@@ -831,6 +844,50 @@ function beginSelectContext(lineText, selectIndex, baseParenDepth, baseCaseDepth
     }
 
     return inlineSplit ? null : selectContext;
+}
+
+function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata()) {
+    const diagnostics = [];
+    if (!schemaMetadata.tables.size) return diagnostics;
+
+    const opaque = buildOpaqueMask(sql);
+    const cteNames = findCTENames(sql, opaque);
+    const { tableReferences } = findTableReferences(sql, schemaMetadata, cteNames, opaque);
+
+    // Build set of columns that exist in 2+ tables currently referenced in the query
+    const colTableCount = new Map();
+    for (const ref of tableReferences) {
+        const cols = schemaMetadata.tableColumns.get(ref.normalizedName);
+        if (!cols) continue;
+        for (const col of cols) {
+            if (!colTableCount.has(col)) colTableCount.set(col, new Set());
+            colTableCount.get(col).add(ref.normalizedName);
+        }
+    }
+    const ambiguous = new Map([...colTableCount.entries()].filter(([, tables]) => tables.size > 1));
+    if (!ambiguous.size) return diagnostics;
+
+    // Find unqualified uses of ambiguous columns (not preceded by `.`)
+    const identRe = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    let m;
+    while ((m = identRe.exec(sql)) !== null) {
+        const col = m[1].toLowerCase();
+        if (!ambiguous.has(col)) continue;
+        if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
+        // Skip if preceded by `.` (qualified reference)
+        if (m.index > 0 && sql[m.index - 1] === '.') continue;
+        // Skip if followed by `.` (it's a table/alias qualifier itself)
+        if (m.index + m[0].length < sql.length && sql[m.index + m[0].length] === '.') continue;
+        const tables = [...ambiguous.get(col)].sort().join(', ');
+        diagnostics.push({
+            start: m.index,
+            end: m.index + m[0].length,
+            message: `Ambiguous column "${m[1]}" — exists in: ${tables}. Qualify it with a table alias.`,
+            severity: 'error',
+        });
+    }
+
+    return diagnostics;
 }
 
 function detectDuplicateAliases(sql) {
@@ -1003,7 +1060,7 @@ function buildOpaqueMask(sql) {
             }
         }
 
-        if (sql[i] === '\'' || sql[i] === '"') {
+        if (sql[i] === '\'' || sql[i] === '"' || sql[i] === '`') {
             const quote = sql[i];
             opaque[i] = true;
             i++;
@@ -1183,7 +1240,9 @@ function createEmptySchemaMetadata() {
         tables: new Set(),
         columns: new Set(),
         tableColumns: new Map(),
-        columnTypes: new Map(), // table -> Map<column, type>
+        columnTypes: new Map(),      // table -> Map<column, type>
+        tableLocations: new Map(),   // table -> { uri, offset }
+        columnLocations: new Map(),  // table -> Map<column, { uri, offset }>
         sourceUris: new Set(),
     };
 }
@@ -1253,6 +1312,21 @@ function mergeSchemaMetadata(target, source) {
         }
     }
 
+    for (const [tableName, loc] of source.tableLocations.entries()) {
+        if (!target.tableLocations.has(tableName)) target.tableLocations.set(tableName, loc);
+    }
+
+    for (const [tableName, colLocs] of source.columnLocations.entries()) {
+        if (!target.columnLocations.has(tableName)) {
+            target.columnLocations.set(tableName, new Map(colLocs));
+        } else {
+            for (const [col, loc] of colLocs.entries()) {
+                if (!target.columnLocations.get(tableName).has(col))
+                    target.columnLocations.get(tableName).set(col, loc);
+            }
+        }
+    }
+
     for (const [tableName, colTypes] of source.columnTypes.entries()) {
         let targetColTypes = target.columnTypes.get(tableName);
         if (!targetColTypes) {
@@ -1289,6 +1363,9 @@ function parseTableDefinitionFile(text) {
         const tableName = tableNameMatch[2].toLowerCase();
         const columns = new Set();
         const colTypes = new Map();
+        const colLocs = new Map();
+        // Offset of __tablename__ line within the full text (for Go to Definition)
+        const tableOffset = blockStart + tableNameMatch.index;
         const columnRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[\w.]+\.)?(?:Column|mapped_column)\s*\(\s*((?:[^,()]+|\([^)]*\))*)/gm;
         let columnMatch;
         while ((columnMatch = columnRe.exec(block)) !== null) {
@@ -1297,11 +1374,14 @@ function parseTableDefinitionFile(text) {
             metadata.columns.add(colName);
             const colType = extractColumnType(columnMatch[2]);
             if (colType) colTypes.set(colName, colType);
+            colLocs.set(colName, { offset: blockStart + columnMatch.index });
         }
 
         metadata.tables.add(tableName);
         metadata.tableColumns.set(tableName, columns);
         metadata.columnTypes.set(tableName, colTypes);
+        metadata.tableLocations.set(tableName, { offset: tableOffset });
+        metadata.columnLocations.set(tableName, colLocs);
     }
 
     return metadata;
@@ -1660,6 +1740,32 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
+    // col_alias usages — tag references to column aliases in ORDER BY / GROUP BY / HAVING / QUALIFY
+    const colAliasNames = new Set(
+        colAliasRanges.map(r => sql.slice(r.start, r.end).toLowerCase())
+    );
+    if (colAliasNames.size > 0) {
+        const clauseColAliasRe = /\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|QUALIFY)\b([\s\S]*?)(?=\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|QUALIFY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|$))/gi;
+        let clauseMatch;
+        while ((clauseMatch = clauseColAliasRe.exec(sql)) !== null) {
+            const clauseBody = clauseMatch[1];
+            const clauseOffset = clauseMatch.index + clauseMatch[0].length - clauseBody.length;
+            const identRe2 = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
+            let im;
+            while ((im = identRe2.exec(clauseBody)) !== null) {
+                if (!colAliasNames.has(im[1].toLowerCase())) continue;
+                const start = clauseOffset + im.index;
+                const end = start + im[1].length;
+                if (rangeOverlapsOpaque(opaque, start, end)) continue;
+                let overlaps = false;
+                for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+                if (overlaps) continue;
+                addUniqueRange(colAliasRanges, seenColAliases, start, end);
+                for (let i = start; i < end; i++) occupied.add(i);
+            }
+        }
+    }
+
     return { tableRanges, columnRanges, aliasRanges, colAliasRanges };
 }
 
@@ -1743,6 +1849,10 @@ function activate(context) {
                         const bytes = await vscode.workspace.fs.readFile(uri);
                         const fileMetadata = parseTableDefinitionFile(Buffer.from(bytes).toString('utf8'));
                         fileMetadata.sourceUris.add(key);
+                        // Attach URI to every location so the definition provider can jump to the right file
+                        for (const loc of fileMetadata.tableLocations.values()) loc.uri = key;
+                        for (const colLocs of fileMetadata.columnLocations.values())
+                            for (const loc of colLocs.values()) loc.uri = key;
                         mergeSchemaMetadata(nextMetadata, fileMetadata);
                     } catch (err) {
                         console.warn(`[jsqlSyntax] Failed to read table definition file "${key}":`, err);
@@ -1890,6 +2000,16 @@ function activate(context) {
                 const absStart = start + cw.index;
                 const range = new vscode.Range(doc.positionAt(absStart), doc.positionAt(absStart + word.length));
                 const diag = new vscode.Diagnostic(range, `Unknown keyword "${word}" — did you mean ${suggestion}?`, vscode.DiagnosticSeverity.Warning);
+                diag.source = 'jsql';
+                docDiagnostics.push(diag);
+            }
+
+            for (const issue of detectAmbiguousColumns(content, schemaMetadata)) {
+                const range = new vscode.Range(
+                    doc.positionAt(start + issue.start),
+                    doc.positionAt(start + issue.end)
+                );
+                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Error);
                 diag.source = 'jsql';
                 docDiagnostics.push(diag);
             }
@@ -2086,6 +2206,83 @@ function activate(context) {
     }, null, context.subscriptions);
 
     context.subscriptions.push(
+        vscode.languages.registerDefinitionProvider('python', {
+            provideDefinition(doc, position) {
+                const text = doc.getText();
+                const offset = doc.offsetAt(position);
+                const sqlRanges = findSQLRanges(text);
+                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
+                if (!sqlRange) return null;
+
+                const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+                if (!wordRange) return null;
+                const word = doc.getText(wordRange).toLowerCase();
+
+                const content = text.slice(sqlRange.start, sqlRange.end);
+                const cteNames = findCTENames(content);
+                const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
+
+                const lineText = doc.lineAt(position).text;
+                const textBeforeWord = lineText.slice(0, wordRange.start.character);
+                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(textBeforeWord);
+
+                // --- Column: jump to the FROM/JOIN where it comes from ---
+                const isColumn = schemaMetadata.columns.has(word) &&
+                    (qualifierMatch || (!schemaMetadata.tables.has(word) && !aliasMap.has(word)));
+
+                if (isColumn) {
+                    let sourceRef = null;
+
+                    if (qualifierMatch) {
+                        // Qualified: uc.created_at → resolve uc to its table reference
+                        const qualifier = qualifierMatch[1].toLowerCase();
+                        sourceRef = aliasMap.get(qualifier) || null;
+                    } else {
+                        // Unqualified: find which tables in this query own this column
+                        const owningRefs = [...aliasMap.values()].filter(
+                            r => schemaMetadata.tableColumns.get(r.normalizedName)?.has(word)
+                        );
+                        // Deduplicate by normalizedName (aliasMap stores both alias and table name → same ref)
+                        const unique = [...new Map(owningRefs.map(r => [r.normalizedName, r])).values()];
+                        if (unique.length === 1) sourceRef = unique[0];
+                        // If 0 or >1 matches: don't jump (ambiguous or unknown)
+                    }
+
+                    if (sourceRef) {
+                        return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + sourceRef.tableStart));
+                    }
+                    return null;
+                }
+
+                // --- Table name or alias: jump to __tablename__ in model file ---
+                const ref = aliasMap.get(word);
+                const tableName = ref
+                    ? ref.normalizedName
+                    : (schemaMetadata.tables.has(word) ? word : null);
+
+                if (!tableName) return null;
+
+                const loc = schemaMetadata.tableLocations.get(tableName);
+                if (!loc?.uri) return null;
+
+                try {
+                    const targetUri = vscode.Uri.parse(loc.uri);
+                    const existing = vscode.workspace.textDocuments.find(d => d.uri.toString() === loc.uri);
+                    if (existing) {
+                        return new vscode.Location(targetUri, existing.positionAt(loc.offset));
+                    }
+                    return vscode.workspace.openTextDocument(targetUri).then(
+                        opened => new vscode.Location(targetUri, opened.positionAt(loc.offset)),
+                        () => new vscode.Location(targetUri, new vscode.Position(0, 0))
+                    );
+                } catch {
+                    return null;
+                }
+            }
+        })
+    );
+
+    context.subscriptions.push(
         vscode.languages.registerHoverProvider('python', {
             provideHover(doc, position) {
                 const text = doc.getText();
@@ -2189,4 +2386,4 @@ function activate(context) {
 }
 
 function deactivate() { }
-module.exports = { activate, deactivate, detectMissingSelectCommas, detectDuplicateAliases, findMatchingBracket, findUnmatchedBrackets };
+module.exports = { activate, deactivate, detectMissingSelectCommas, detectDuplicateAliases, detectAmbiguousColumns, findMatchingBracket, findUnmatchedBrackets };

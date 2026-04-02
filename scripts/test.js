@@ -138,6 +138,17 @@ const formatCases = [
         ].join('\n'),
     },
     {
+        name: 'expands multi-row INSERT VALUES onto separate lines',
+        input: "insert into t (a, b) values (1, 'x'), (2, 'y'), (3, 'z')",
+        expected: [
+            'INSERT INTO t (a, b)',
+            'VALUES',
+            "    (1, \"x\"),",
+            "    (2, \"y\"),",
+            "    (3, \"z\")",
+        ].join('\n'),
+    },
+    {
         name: 'keeps GROUP BY, HAVING, and ORDER BY as distinct clauses in SQL order',
         input: 'select team, count(*) from matches group by team having count(*) > 1 order by count(*) desc',
         expected: [
@@ -710,6 +721,49 @@ const commaWarningCases = [
 
 const { detectDuplicateAliases } = loadExtensionInternals();
 
+const { detectAmbiguousColumns } = loadExtensionInternals();
+
+const ambiguousColumnCases = [
+    {
+        name: 'flags unqualified column that exists in two joined tables',
+        metadataFiles: [[
+            "class UserContract(Model):\n    __tablename__ = 'user_contract'\n    id_user = sa.Column(INT)\n    created_at = sa.Column(TIMESTAMP)",
+        ].join('\n'), [
+            "class Task(Model):\n    __tablename__ = 'task'\n    id_user = sa.Column(INT)\n    name = sa.Column(VARCHAR(255))",
+        ].join('\n')],
+        input: [
+            'SELECT id_user, name',
+            'FROM user_contract uc',
+            'JOIN task t ON t.id_user = uc.id_user',
+        ].join('\n'),
+        expectedCount: 1, // id_user is ambiguous; the qualified ones (uc.id_user, t.id_user) are fine
+    },
+    {
+        name: 'does not flag qualified column references',
+        metadataFiles: [[
+            "class UserContract(Model):\n    __tablename__ = 'user_contract'\n    id_user = sa.Column(INT)",
+        ].join('\n'), [
+            "class Task(Model):\n    __tablename__ = 'task'\n    id_user = sa.Column(INT)",
+        ].join('\n')],
+        input: [
+            'SELECT uc.id_user, t.id_user',
+            'FROM user_contract uc',
+            'JOIN task t ON t.id_user = uc.id_user',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'does not flag column that only exists in one table',
+        metadataFiles: [[
+            "class UserContract(Model):\n    __tablename__ = 'user_contract'\n    id_user = sa.Column(INT)\n    created_at = sa.Column(TIMESTAMP)",
+        ].join('\n'), [
+            "class Task(Model):\n    __tablename__ = 'task'\n    id_user = sa.Column(INT)\n    name = sa.Column(VARCHAR(255))",
+        ].join('\n')],
+        input: 'SELECT created_at FROM user_contract',
+        expectedCount: 0,
+    },
+];
+
 const duplicateAliasCases = [
     {
         name: 'warns on duplicate AS alias in SELECT',
@@ -911,6 +965,20 @@ function runUnmatchedBracketCases() {
     }
 }
 
+function runAmbiguousColumnCases() {
+    for (const testCase of ambiguousColumnCases) {
+        const metadata = testCase.metadataFiles.reduce((acc, fileText) => {
+            mergeSchemaMetadata(acc, parseTableDefinitionFile(fileText));
+            return acc;
+        }, createEmptySchemaMetadata());
+        assert.strictEqual(
+            detectAmbiguousColumns(testCase.input, metadata).length,
+            testCase.expectedCount,
+            `detectAmbiguousColumns failed: ${testCase.name}`
+        );
+    }
+}
+
 function runDuplicateAliasCases() {
     for (const testCase of duplicateAliasCases) {
         assert.strictEqual(
@@ -930,10 +998,11 @@ function main() {
     runWorkspacePatternCases();
     runSemanticWarningCases();
     runCommaWarningCases();
+    runAmbiguousColumnCases();
     runDuplicateAliasCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + commaWarningCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

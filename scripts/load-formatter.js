@@ -18,7 +18,7 @@ function loadExtensionInternals() {
     };
 
     vm.runInNewContext(
-        `${code}\nmodule.exports.__test = { formatSQL, findSQLRanges, buildFormattedSQLBlock, createEmptySchemaMetadata, isWorkspaceRelativeGlobPattern, findClosestName, mergeSchemaMetadata, parseTableDefinitionFile, findSemanticEntityRanges, findSemanticWarnings, detectUnionCommentAdjacency, detectMissingSelectCommas, detectDuplicateAliases, findMatchingBracket, findUnmatchedBrackets };`,
+        `${code}\nmodule.exports.__test = { formatSQL, findSQLRanges, buildFormattedSQLBlock, createEmptySchemaMetadata, isWorkspaceRelativeGlobPattern, findClosestName, mergeSchemaMetadata, parseTableDefinitionFile, findSemanticEntityRanges, findSemanticWarnings, detectUnionCommentAdjacency, detectMissingSelectCommas, detectDuplicateAliases, detectAmbiguousColumns, findMatchingBracket, findUnmatchedBrackets };`,
         sandbox,
         { filename: extensionPath }
     );
