@@ -864,7 +864,18 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
             colTableCount.get(col).add(ref.normalizedName);
         }
     }
-    const ambiguous = new Map([...colTableCount.entries()].filter(([, tables]) => tables.size > 1));
+    // Columns used in USING(...) are intentionally shared — not ambiguous
+    const usingCols = new Set();
+    const usingRe = /\bUSING\s*\(([^)]+)\)/gi;
+    let um;
+    while ((um = usingRe.exec(sql)) !== null) {
+        if (rangeOverlapsOpaque(opaque, um.index, um.index + um[0].length)) continue;
+        for (const col of um[1].split(',')) usingCols.add(col.trim().toLowerCase());
+    }
+
+    const ambiguous = new Map(
+        [...colTableCount.entries()].filter(([col, tables]) => tables.size > 1 && !usingCols.has(col))
+    );
     if (!ambiguous.size) return diagnostics;
 
     // Find unqualified uses of ambiguous columns (not preceded by `.`)
@@ -874,8 +885,8 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
         const col = m[1].toLowerCase();
         if (!ambiguous.has(col)) continue;
         if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
-        // Skip if preceded by `.` (qualified reference)
-        if (m.index > 0 && sql[m.index - 1] === '.') continue;
+        // Skip if preceded by `.` (qualified reference) or `:` (bind parameter)
+        if (m.index > 0 && (sql[m.index - 1] === '.' || sql[m.index - 1] === ':')) continue;
         // Skip if followed by `.` (it's a table/alias qualifier itself)
         if (m.index + m[0].length < sql.length && sql[m.index + m[0].length] === '.') continue;
         const tables = [...ambiguous.get(col)].sort().join(', ');

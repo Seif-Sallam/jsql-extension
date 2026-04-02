@@ -736,7 +736,21 @@ const ambiguousColumnCases = [
             'FROM user_contract uc',
             'JOIN task t ON t.id_user = uc.id_user',
         ].join('\n'),
-        expectedCount: 1, // id_user is ambiguous; the qualified ones (uc.id_user, t.id_user) are fine
+        expectedCount: 1, // unqualified id_user in SELECT is ambiguous
+    },
+    {
+        name: 'does not flag columns used in USING clause',
+        metadataFiles: [[
+            "class UserContract(Model):\n    __tablename__ = 'user_contract'\n    id_user = sa.Column(INT)",
+        ].join('\n'), [
+            "class Task(Model):\n    __tablename__ = 'task'\n    id_user = sa.Column(INT)",
+        ].join('\n')],
+        input: [
+            'SELECT uc.id_user',
+            'FROM user_contract uc',
+            'JOIN task t USING (id_user)',
+        ].join('\n'),
+        expectedCount: 0,
     },
     {
         name: 'does not flag qualified column references',
