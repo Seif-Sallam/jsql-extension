@@ -1476,6 +1476,31 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildOpaque
         if (alias) aliasMap.set(alias.toLowerCase(), reference);
     }
 
+    // Derived table (subquery) aliases — `) AS alias` or `) alias`
+    const derivedAliasRe = /\)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = derivedAliasRe.exec(sql)) !== null) {
+        const alias = match[1];
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        const start = match.index + match[0].length - alias.length;
+        const end = start + alias.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        if (aliasMap.has(alias.toLowerCase())) continue; // already registered
+        const reference = {
+            tableName: alias,
+            normalizedName: alias.toLowerCase(),
+            alias,
+            tableStart: start,
+            tableEnd: end,
+            aliasStart: start,
+            aliasEnd: end,
+            knownMetadata: false,
+            isCTE: false,
+            isDerived: true,
+        };
+        tableReferences.push(reference);
+        aliasMap.set(alias.toLowerCase(), reference);
+    }
+
     return { tableReferences, aliasMap };
 }
 
@@ -1545,7 +1570,7 @@ function findSemanticWarnings(sql, schemaMetadata = createEmptySchemaMetadata())
     const tableCandidates = new Set([...schemaMetadata.tables, ...cteNames]);
 
     for (const reference of tableReferences) {
-        if (reference.knownMetadata || reference.isCTE) continue;
+        if (reference.knownMetadata || reference.isCTE || reference.isDerived) continue;
 
         const suggestion = findClosestName(reference.normalizedName, tableCandidates);
         warnings.push({
@@ -1612,6 +1637,72 @@ function findSemanticWarnings(sql, schemaMetadata = createEmptySchemaMetadata())
     return warnings;
 }
 
+function extractCTEColumns(sql, opaque) {
+    // Returns Map<cteName, Map<colName, offsetInSql>>
+    const cteSchema = new Map();
+    const cteRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*AS\s*\(/gi;
+    let m;
+
+    while ((m = cteRe.exec(sql)) !== null) {
+        if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
+        const cteName = m[1].toLowerCase();
+        if (ALL_SQL_KEYWORDS.has(m[1].toUpperCase())) continue;
+
+        const cols = new Map();
+
+        // Case 1: explicit column list — cte_name(col1, col2) AS (
+        if (m[2]) {
+            let searchFrom = m.index + m[0].indexOf('(') + 1;
+            for (const col of m[2].split(',')) {
+                const trimmed = col.trim();
+                if (!trimmed || ALL_SQL_KEYWORDS.has(trimmed.toUpperCase())) continue;
+                const colOffset = sql.indexOf(trimmed, searchFrom);
+                if (colOffset !== -1) {
+                    cols.set(trimmed.toLowerCase(), colOffset);
+                    searchFrom = colOffset + trimmed.length;
+                }
+            }
+            cteSchema.set(cteName, cols);
+            continue;
+        }
+
+        // Case 2: implicit — parse SELECT aliases from the CTE body
+        const bodyStart = m.index + m[0].length;
+        let depth = 1, i = bodyStart;
+        while (i < sql.length && depth > 0) {
+            if (!opaque[i]) {
+                if (sql[i] === '(') depth++;
+                else if (sql[i] === ')') depth--;
+            }
+            if (depth > 0) i++;
+        }
+        const body = sql.slice(bodyStart, i);
+        const bodyOffset = bodyStart;
+
+        // Explicit AS aliases in body
+        const asRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+        let am;
+        while ((am = asRe.exec(body)) !== null) {
+            const alias = am[1].toLowerCase();
+            if (ALL_SQL_KEYWORDS.has(am[1].toUpperCase())) continue;
+            if (!cols.has(alias)) cols.set(alias, bodyOffset + am.index + am[0].length - am[1].length);
+        }
+
+        // Implicit aliases: after ), ', ", number, .col — before comma or clause keyword or end of line
+        const implicitRe = /(?:\)|['"]|\b\d+(?:\.\d+)?|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|\b(?:FROM|WHERE|HAVING|GROUP|ORDER|LIMIT)\b|$))/gm;
+        let im2;
+        while ((im2 = implicitRe.exec(body)) !== null) {
+            const alias = im2[1].toLowerCase();
+            if (ALL_SQL_KEYWORDS.has(im2[1].toUpperCase())) continue;
+            if (!cols.has(alias)) cols.set(alias, bodyOffset + im2.index + im2[0].length - im2[1].length);
+        }
+
+        cteSchema.set(cteName, cols);
+    }
+
+    return cteSchema;
+}
+
 function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadata()) {
     const opaque = buildOpaqueMask(sql);
     const tableRanges = [];
@@ -1655,6 +1746,21 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     const seenColAliases = new Set();
     const tableAliasRe = /\b(?:FROM|JOIN|UPDATE|INTO)\s+[A-Za-z_][A-Za-z0-9_.]*\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
     while ((match = tableAliasRe.exec(sql)) !== null) {
+        const alias = match[1];
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        const start = match.index + match[0].length - alias.length;
+        const end = start + alias.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        let overlaps = false;
+        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+        if (overlaps) continue;
+        addUniqueRange(aliasRanges, seenAliases, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
+    // Derived table (subquery) aliases — ) AS alias or ) alias
+    const derivedAliasHighlightRe = /\)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = derivedAliasHighlightRe.exec(sql)) !== null) {
         const alias = match[1];
         if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
         const start = match.index + match[0].length - alias.length;
@@ -1777,7 +1883,45 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
-    return { tableRanges, columnRanges, aliasRanges, colAliasRanges };
+    // CTE column coloring — qualifier.col where qualifier → CTE with known columns
+    const cteSchema = extractCTEColumns(sql, opaque);
+    const cteAliasMap = new Map(); // alias/cteName -> cteName
+    for (const [cteName] of cteSchema) {
+        cteAliasMap.set(cteName, cteName);
+    }
+    // Also map table aliases that point to CTEs
+    for (const [key, ref] of aliasRanges.reduce((m, r) => m, new Map())) { /* no-op */ }
+    // Build from aliasMap (re-derive from sql)
+    const cteNamesSet = new Set(cteSchema.keys());
+    const cteTblAliasRe = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = cteTblAliasRe.exec(sql)) !== null) {
+        const tbl = match[1].toLowerCase();
+        const alias = match[2].toLowerCase();
+        if (cteNamesSet.has(tbl) && !ALL_SQL_KEYWORDS.has(match[2].toUpperCase())) {
+            cteAliasMap.set(alias, tbl);
+        }
+    }
+    if (cteAliasMap.size > 0) {
+        const qualColRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+        while ((match = qualColRe.exec(sql)) !== null) {
+            const qualifier = match[1].toLowerCase();
+            const col = match[2].toLowerCase();
+            const cteName = cteAliasMap.get(qualifier);
+            if (!cteName) continue;
+            const cols = cteSchema.get(cteName);
+            if (!cols?.has(col)) continue;
+            const start = match.index + match[1].length + 1; // offset of col after the dot
+            const end = start + match[2].length;
+            if (rangeOverlapsOpaque(opaque, start, end)) continue;
+            let overlaps = false;
+            for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+            if (overlaps) continue;
+            addUniqueRange(columnRanges, seenColumns, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+        }
+    }
+
+    return { tableRanges, columnRanges, aliasRanges, colAliasRanges, cteSchema };
 }
 
 function buildDecorations(themeName) {
@@ -2242,38 +2386,61 @@ function activate(context) {
                     (qualifierMatch || (!schemaMetadata.tables.has(word) && !aliasMap.has(word)));
 
                 if (isColumn) {
-                    let sourceRef = null;
+                    const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
+
+                    // Build CTE alias map for this block
+                    const cteAliasMap = new Map();
+                    for (const [cteName] of cteSchema) cteAliasMap.set(cteName, cteName);
+                    const cteTblAliasRe2 = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+                    let cm;
+                    while ((cm = cteTblAliasRe2.exec(content)) !== null) {
+                        const tbl = cm[1].toLowerCase();
+                        const alias = cm[2].toLowerCase();
+                        if (cteSchema.has(tbl) && !ALL_SQL_KEYWORDS.has(cm[2].toUpperCase()))
+                            cteAliasMap.set(alias, tbl);
+                    }
 
                     if (qualifierMatch) {
-                        // Qualified: uc.created_at → resolve uc to its table reference
                         const qualifier = qualifierMatch[1].toLowerCase();
-                        sourceRef = aliasMap.get(qualifier) || null;
+
+                        // CTE column: jump to where the alias is defined in the CTE body
+                        const cteName = cteAliasMap.get(qualifier);
+                        if (cteName) {
+                            const cols = cteSchema.get(cteName);
+                            const offset = cols?.get(word);
+                            if (offset !== undefined) {
+                                return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + offset));
+                            }
+                        }
+
+                        // Schema column: jump to FROM/JOIN of the resolved table
+                        const sourceRef = aliasMap.get(qualifier) || null;
+                        if (sourceRef) {
+                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + sourceRef.tableStart));
+                        }
                     } else {
                         // Unqualified: find which tables in this query own this column
                         const owningRefs = [...aliasMap.values()].filter(
                             r => schemaMetadata.tableColumns.get(r.normalizedName)?.has(word)
                         );
-                        // Deduplicate by normalizedName (aliasMap stores both alias and table name → same ref)
                         const unique = [...new Map(owningRefs.map(r => [r.normalizedName, r])).values()];
-                        if (unique.length === 1) sourceRef = unique[0];
-                        // If 0 or >1 matches: don't jump (ambiguous or unknown)
-                    }
-
-                    if (sourceRef) {
-                        return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + sourceRef.tableStart));
+                        if (unique.length === 1) {
+                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + unique[0].tableStart));
+                        }
                     }
                     return null;
                 }
 
-                // --- Table name or alias: jump to __tablename__ in model file ---
+                // --- Table alias: jump to FROM/JOIN in query ---
                 const ref = aliasMap.get(word);
-                const tableName = ref
-                    ? ref.normalizedName
-                    : (schemaMetadata.tables.has(word) ? word : null);
+                if (ref) {
+                    return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + ref.tableStart));
+                }
 
-                if (!tableName) return null;
+                // --- Bare table name: jump to __tablename__ in model file ---
+                if (!schemaMetadata.tables.has(word)) return null;
 
-                const loc = schemaMetadata.tableLocations.get(tableName);
+                const loc = schemaMetadata.tableLocations.get(word);
                 if (!loc?.uri) return null;
 
                 try {
@@ -2388,6 +2555,109 @@ function activate(context) {
                 return null;
             }
         })
+    );
+
+    // Rename symbol — renames a table alias or column alias throughout the SQL block
+    context.subscriptions.push(
+        vscode.languages.registerRenameProvider('python', {
+            prepareRename(doc, position) {
+                const text = doc.getText();
+                const offset = doc.offsetAt(position);
+                const sqlRanges = findSQLRanges(text);
+                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
+                if (!sqlRange) return null;
+
+                const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+                if (!wordRange) return null;
+                const word = doc.getText(wordRange).toLowerCase();
+
+                const content = text.slice(sqlRange.start, sqlRange.end);
+                const cteNames = findCTENames(content);
+                const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
+                const opaque = buildOpaqueMask(content);
+
+                // Only allow renaming aliases (table or column), not raw table/column names
+                const isTableAlias = aliasMap.has(word) && aliasMap.get(word).alias?.toLowerCase() === word;
+                // Column alias: check colAliasRanges
+                const colAliasNames = new Set(
+                    findSemanticEntityRanges(content, schemaMetadata).colAliasRanges
+                        .map(r => content.slice(r.start, r.end).toLowerCase())
+                );
+                const isColAlias = colAliasNames.has(word);
+
+                if (!isTableAlias && !isColAlias) return null;
+                return { range: wordRange, placeholder: doc.getText(wordRange) };
+            },
+
+            provideRenameEdits(doc, position, newName) {
+                const text = doc.getText();
+                const offset = doc.offsetAt(position);
+                const sqlRanges = findSQLRanges(text);
+                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
+                if (!sqlRange) return null;
+
+                const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+                if (!wordRange) return null;
+                const word = doc.getText(wordRange).toLowerCase();
+
+                const content = text.slice(sqlRange.start, sqlRange.end);
+                const opaque = buildOpaqueMask(content);
+                const edit = new vscode.WorkspaceEdit();
+
+                // Find all non-opaque occurrences of the word token in the SQL block
+                const re = new RegExp(`\\b${word}\\b`, 'gi');
+                let m;
+                while ((m = re.exec(content)) !== null) {
+                    if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
+                    const start = doc.positionAt(sqlRange.start + m.index);
+                    const end = doc.positionAt(sqlRange.start + m.index + m[0].length);
+                    edit.replace(doc.uri, new vscode.Range(start, end), newName);
+                }
+
+                return edit;
+            }
+        })
+    );
+
+    // Column completions — triggered by `.` after a table alias
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider('python', {
+            provideCompletionItems(doc, position) {
+                const text = doc.getText();
+                const offset = doc.offsetAt(position);
+                const sqlRanges = findSQLRanges(text);
+                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
+                if (!sqlRange) return null;
+
+                const lineText = doc.lineAt(position).text;
+                const textBefore = lineText.slice(0, position.character);
+                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/. exec(textBefore);
+                if (!qualifierMatch) return null;
+
+                const qualifier = qualifierMatch[1].toLowerCase();
+                const content = text.slice(sqlRange.start, sqlRange.end);
+                const cteNames = findCTENames(content);
+                const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
+
+                const ref = aliasMap.get(qualifier);
+                const tableName = ref
+                    ? ref.normalizedName
+                    : (schemaMetadata.tables.has(qualifier) ? qualifier : null);
+                if (!tableName) return null;
+
+                const columns = schemaMetadata.tableColumns.get(tableName);
+                const types = schemaMetadata.columnTypes.get(tableName);
+                if (!columns) return null;
+
+                return [...columns].sort().map(col => {
+                    const item = new vscode.CompletionItem(col, vscode.CompletionItemKind.Field);
+                    const type = types?.get(col);
+                    item.detail = type ? `${tableName}.${col} (${type})` : `${tableName}.${col}`;
+                    item.documentation = new vscode.MarkdownString(`Column of \`${tableName}\``);
+                    return item;
+                });
+            }
+        }, '.')
     );
 
     context.subscriptions.push(bracketDec);
