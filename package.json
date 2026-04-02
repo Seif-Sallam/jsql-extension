@@ -45,6 +45,11 @@
             "type": "string"
           },
           "description": "Workspace-relative glob patterns for Python model files such as tables.py. Parsed __tablename__ and sa.Column definitions are used to color known SQL tables and columns."
+        },
+        "jsqlSyntax.semanticWarnings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable schema-aware SQL warnings for unknown tables and invalid qualified columns using the loaded table definition files."
         }
       }
     }

@@ -8,9 +8,11 @@ const {
     findSQLRanges,
     buildFormattedSQLBlock,
     createEmptySchemaMetadata,
+    isWorkspaceRelativeGlobPattern,
     mergeSchemaMetadata,
     parseTableDefinitionFile,
     findSemanticEntityRanges,
+    findSemanticWarnings,
     detectMissingSelectCommas,
     findMatchingBracket,
     findUnmatchedBrackets
@@ -114,6 +116,16 @@ const formatCases = [
         ].join('\n'),
     },
     {
+        name: 'expands SELECT lists with exactly two columns',
+        input: 'select a, b from metrics',
+        expected: [
+            'SELECT',
+            '    a,',
+            '    b',
+            'FROM metrics',
+        ].join('\n'),
+    },
+    {
         name: 'formats CASE expressions across multiple lines',
         input: 'select case when score > 90 then \'A\' when score > 80 then \'B\' else \'C\' end as grade from exams',
         expected: [
@@ -129,7 +141,9 @@ const formatCases = [
         name: 'keeps GROUP BY, HAVING, and ORDER BY as distinct clauses in SQL order',
         input: 'select team, count(*) from matches group by team having count(*) > 1 order by count(*) desc',
         expected: [
-            'SELECT team, count(*)',
+            'SELECT',
+            '    team,',
+            '    count(*)',
             'FROM matches',
             'GROUP BY team',
             'HAVING count(*) > 1',
@@ -242,7 +256,9 @@ const blockFormatCases = [
         ].join('\n'),
         expected: [
             "query = '''",
-            '        SELECT code, name',
+            '        SELECT',
+            '            code,',
+            '            name',
             '        FROM offboarding_reason',
             '        WHERE category = :category',
             "            AND is_active = 1''',",
@@ -335,6 +351,89 @@ const semanticHighlightCases = [
         ].join('\n'),
         expectedTables: ['user_task', 'user_task_step'],
         expectedColumns: ['id_status', 'id_user_task', 'id_user_task_step', 'name', 'response'],
+    },
+];
+
+const workspacePatternCases = [
+    { name: 'accepts workspace-relative globstar patterns', input: '**/tables.py', expected: true },
+    { name: 'accepts nested relative paths', input: 'backend/models/*.py', expected: true },
+    { name: 'rejects absolute unix paths', input: '/Users/me/project/tables.py', expected: false },
+    { name: 'rejects home-expanded paths', input: '~/project/tables.py', expected: false },
+    { name: 'rejects parent directory traversal', input: '../shared/tables.py', expected: false },
+];
+
+const semanticWarningCases = [
+    {
+        name: 'warns on unknown table names using loaded metadata',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+            '    name = sa.Column(VARCHAR(255), nullable=False)',
+        ].join('\n')],
+        input: [
+            'SELECT ut.id_user_task',
+            'FROM user_taks ut',
+        ].join('\n'),
+        expectedMessages: ['Unknown table "user_taks" — did you mean user_task?'],
+    },
+    {
+        name: 'warns on unknown qualified columns for known aliases',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+            '    name = sa.Column(VARCHAR(255), nullable=False)',
+        ].join('\n')],
+        input: [
+            'SELECT ut.id_user',
+            'FROM user_task ut',
+        ].join('\n'),
+        expectedMessages: ['Unknown column "id_user" on alias "ut" — did you mean id_user_task?'],
+    },
+    {
+        name: 'warns on unknown aliases when no derived tables are present',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+            '    name = sa.Column(VARCHAR(255), nullable=False)',
+        ].join('\n')],
+        input: [
+            'SELECT ux.id_user_task',
+            'FROM user_task ut',
+        ].join('\n'),
+        expectedMessages: ['Unknown table or alias "ux" — did you mean ut?'],
+    },
+    {
+        name: 'does not warn on cte-qualified columns without known cte metadata',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+        ].join('\n')],
+        input: [
+            'WITH latest AS (',
+            '    SELECT id_user_task',
+            '    FROM user_task',
+            ')',
+            'SELECT latest.id_user_task',
+            'FROM latest',
+        ].join('\n'),
+        expectedMessages: [],
+    },
+    {
+        name: 'does not warn on unresolved qualifiers when derived tables are present',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+        ].join('\n')],
+        input: [
+            'SELECT x.id_user_task',
+            'FROM (SELECT id_user_task FROM user_task) x',
+        ].join('\n'),
+        expectedMessages: [],
     },
 ];
 
@@ -706,6 +805,33 @@ function runSemanticHighlightCases() {
     }
 }
 
+function runWorkspacePatternCases() {
+    for (const testCase of workspacePatternCases) {
+        assert.strictEqual(
+            isWorkspaceRelativeGlobPattern(testCase.input),
+            testCase.expected,
+            `isWorkspaceRelativeGlobPattern failed: ${testCase.name}`
+        );
+    }
+}
+
+function runSemanticWarningCases() {
+    for (const testCase of semanticWarningCases) {
+        const metadata = testCase.metadataFiles.reduce((acc, fileText) => {
+            mergeSchemaMetadata(acc, parseTableDefinitionFile(fileText));
+            return acc;
+        }, createEmptySchemaMetadata());
+
+        const warnings = findSemanticWarnings(testCase.input, metadata).map(issue => issue.message);
+
+        assert.strictEqual(
+            JSON.stringify(warnings),
+            JSON.stringify(testCase.expectedMessages),
+            `findSemanticWarnings failed: ${testCase.name}`
+        );
+    }
+}
+
 function runCommaWarningCases() {
     for (const testCase of commaWarningCases) {
         assert.strictEqual(
@@ -742,10 +868,12 @@ function main() {
     runBlockFormatCases();
     runSchemaMetadataCases();
     runSemanticHighlightCases();
+    runWorkspacePatternCases();
+    runSemanticWarningCases();
     runCommaWarningCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + commaWarningCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + commaWarningCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

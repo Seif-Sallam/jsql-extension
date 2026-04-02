@@ -89,7 +89,8 @@ Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) and run:
 ### Configuration
 
 - **`jsqlSyntax.theme`**: `"dracula" | "monokai" | "one-dark"` (default: `"dracula"`)
-- **`jsqlSyntax.tableDefinitionFiles`**: array of workspace-relative glob patterns for Python model files such as `tables.py`. The extension parses `__tablename__` and `sa.Column(...)` definitions and uses them to color known SQL tables and columns.
+- **`jsqlSyntax.tableDefinitionFiles`**: array of workspace-relative glob patterns for Python model files such as `tables.py`. The extension parses `__tablename__` and `sa.Column(...)` definitions and uses them to color known SQL tables and columns. These globs are searched only inside the open workspace folders.
+- **`jsqlSyntax.semanticWarnings`**: `true | false` (default: `true`). Enables schema-aware warnings for unknown tables and invalid qualified columns.
 
 You can set it in Settings UI or in `settings.json`:
 
@@ -99,7 +100,8 @@ You can set it in Settings UI or in `settings.json`:
   "jsqlSyntax.tableDefinitionFiles": [
     "**/tables.py",
     "**/models/*.py"
-  ]
+  ],
+  "jsqlSyntax.semanticWarnings": true
 }
 ```
 

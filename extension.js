@@ -595,7 +595,7 @@ function formatSQL(sql) {
         let keyword = 'SELECT';
         if (rest.startsWith('DISTINCT ')) { keyword = 'SELECT DISTINCT'; rest = rest.slice('DISTINCT '.length); }
         const cols = splitTopLevelCommas(rest);
-        if (cols.length <= 2) return [`${keyword} ${cols.join(', ')}`];
+        if (cols.length <= 1) return [`${keyword} ${cols.join(', ')}`];
         return [keyword, ...cols.map((c, i) => '    ' + c + (i < cols.length - 1 ? ',' : ''))];
     });
 
@@ -1095,6 +1095,42 @@ function createEmptySchemaMetadata() {
     };
 }
 
+function isWorkspaceRelativeGlobPattern(pattern) {
+    if (typeof pattern !== 'string') return false;
+    const trimmed = pattern.trim();
+    if (!trimmed) return false;
+
+    const normalized = trimmed.replace(/\\/g, '/');
+    if (/^(~|\/|[A-Za-z]:\/)/.test(normalized)) return false;
+    if (normalized.split('/').includes('..')) return false;
+    return true;
+}
+
+function findClosestName(word, candidates) {
+    let best = null;
+    let bestDist = Infinity;
+
+    for (const candidate of candidates) {
+        if (candidate.startsWith(word) || word.startsWith(candidate)) {
+            const prefixDistance = Math.abs(candidate.length - word.length);
+            if (prefixDistance < bestDist) {
+                bestDist = prefixDistance;
+                best = candidate;
+            }
+            continue;
+        }
+
+        if (Math.abs(candidate.length - word.length) > 3) continue;
+        const distance = levenshtein(word, candidate);
+        if (distance < bestDist) {
+            bestDist = distance;
+            best = candidate;
+        }
+    }
+
+    return bestDist <= 5 ? best : null;
+}
+
 function mergeSchemaMetadata(target, source) {
     for (const tableName of source.tables) {
         target.tables.add(tableName);
@@ -1165,6 +1201,206 @@ function addUniqueRange(ranges, seen, start, end) {
     if (seen.has(key)) return;
     seen.add(key);
     ranges.push({ start, end });
+}
+
+function normalizeTableName(name) {
+    const parts = name.split('.');
+    return parts[parts.length - 1].toLowerCase();
+}
+
+function findCTENames(sql, opaque = buildOpaqueMask(sql)) {
+    const cteNames = new Set();
+    const cteRe = /\bWITH(?:\s+RECURSIVE)?\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(|,\s*([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(/gi;
+    let match;
+
+    while ((match = cteRe.exec(sql)) !== null) {
+        const cteName = match[1] || match[2];
+        const start = match.index + match[0].indexOf(cteName);
+        const end = start + cteName.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        cteNames.add(cteName.toLowerCase());
+    }
+
+    return cteNames;
+}
+
+function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildOpaqueMask(sql)) {
+    const tableReferences = [];
+    const aliasMap = new Map();
+    const tableRefRe = /\b(FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/gi;
+    let match;
+
+    while ((match = tableRefRe.exec(sql)) !== null) {
+        const tableName = match[2];
+        const tableStart = match.index + match[0].indexOf(tableName);
+        const tableEnd = tableStart + tableName.length;
+        if (rangeOverlapsOpaque(opaque, tableStart, tableEnd)) continue;
+
+        let alias = match[3] || null;
+        let aliasStart = -1;
+        let aliasEnd = -1;
+        if (alias) {
+            aliasStart = match.index + match[0].lastIndexOf(alias);
+            aliasEnd = aliasStart + alias.length;
+            if (rangeOverlapsOpaque(opaque, aliasStart, aliasEnd) || ALL_SQL_KEYWORDS.has(alias.toUpperCase())) {
+                alias = null;
+                aliasStart = -1;
+                aliasEnd = -1;
+            }
+        }
+
+        const normalizedName = normalizeTableName(tableName);
+        const reference = {
+            tableName,
+            normalizedName,
+            alias,
+            tableStart,
+            tableEnd,
+            aliasStart,
+            aliasEnd,
+            knownMetadata: schemaMetadata.tables.has(normalizedName),
+            isCTE: cteNames.has(normalizedName),
+        };
+
+        tableReferences.push(reference);
+        aliasMap.set(normalizedName, reference);
+        if (alias) aliasMap.set(alias.toLowerCase(), reference);
+    }
+
+    return { tableReferences, aliasMap };
+}
+
+function hasDerivedTableReferences(sql, opaque = buildOpaqueMask(sql)) {
+    const derivedTableRe = /\b(?:FROM|JOIN)\s*\(/gi;
+    let match;
+
+    while ((match = derivedTableRe.exec(sql)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (!rangeOverlapsOpaque(opaque, start, end)) return true;
+    }
+
+    return false;
+}
+
+function findQualifiedReferences(sql, tableReferences, opaque = buildOpaqueMask(sql)) {
+    const qualifiedReferences = [];
+    const occupied = new Set();
+    const qualifiedRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    let match;
+
+    for (const reference of tableReferences) {
+        for (let i = reference.tableStart; i < reference.tableEnd; i++) occupied.add(i);
+    }
+
+    while ((match = qualifiedRe.exec(sql)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (sql[start - 1] === '.' || sql[end] === '.') continue;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+
+        let overlapsTableReference = false;
+        for (let i = start; i < end; i++) {
+            if (occupied.has(i)) {
+                overlapsTableReference = true;
+                break;
+            }
+        }
+        if (overlapsTableReference) continue;
+
+        qualifiedReferences.push({
+            qualifier: match[1],
+            column: match[2],
+            start,
+            end,
+            qualifierStart: start,
+            qualifierEnd: start + match[1].length,
+            columnStart: start + match[1].length + 1,
+            columnEnd: end,
+        });
+    }
+
+    return qualifiedReferences;
+}
+
+function findSemanticWarnings(sql, schemaMetadata = createEmptySchemaMetadata()) {
+    if (schemaMetadata.tables.size === 0) return [];
+
+    const warnings = [];
+    const seenUnknownQualifiers = new Set();
+    const opaque = buildOpaqueMask(sql);
+    const cteNames = findCTENames(sql, opaque);
+    const { tableReferences, aliasMap } = findTableReferences(sql, schemaMetadata, cteNames, opaque);
+    const qualifiedReferences = findQualifiedReferences(sql, tableReferences, opaque);
+    const hasDerivedTables = hasDerivedTableReferences(sql, opaque);
+    const tableCandidates = new Set([...schemaMetadata.tables, ...cteNames]);
+
+    for (const reference of tableReferences) {
+        if (reference.knownMetadata || reference.isCTE) continue;
+
+        const suggestion = findClosestName(reference.normalizedName, tableCandidates);
+        warnings.push({
+            start: reference.tableStart,
+            end: reference.tableEnd,
+            message: suggestion
+                ? `Unknown table "${reference.tableName}" — did you mean ${suggestion}?`
+                : `Unknown table "${reference.tableName}".`,
+        });
+    }
+
+    for (const reference of qualifiedReferences) {
+        const qualifier = reference.qualifier.toLowerCase();
+        const column = reference.column.toLowerCase();
+        const resolvedReference = aliasMap.get(qualifier);
+
+        if (resolvedReference) {
+            if (!resolvedReference.knownMetadata) continue;
+
+            const tableColumns = schemaMetadata.tableColumns.get(resolvedReference.normalizedName);
+            if (!tableColumns || tableColumns.has(column)) continue;
+
+            const suggestion = findClosestName(column, tableColumns);
+            warnings.push({
+                start: reference.columnStart,
+                end: reference.columnEnd,
+                message: suggestion
+                    ? `Unknown column "${reference.column}" on ${resolvedReference.alias ? `alias "${resolvedReference.alias}"` : `table "${resolvedReference.tableName}"`} — did you mean ${suggestion}?`
+                    : `Unknown column "${reference.column}" on ${resolvedReference.alias ? `alias "${resolvedReference.alias}"` : `table "${resolvedReference.tableName}"`}.`,
+            });
+            continue;
+        }
+
+        if (schemaMetadata.tables.has(qualifier)) {
+            const tableColumns = schemaMetadata.tableColumns.get(qualifier);
+            if (!tableColumns || tableColumns.has(column)) continue;
+
+            const suggestion = findClosestName(column, tableColumns);
+            warnings.push({
+                start: reference.columnStart,
+                end: reference.columnEnd,
+                message: suggestion
+                    ? `Unknown column "${reference.column}" on table "${reference.qualifier}" — did you mean ${suggestion}?`
+                    : `Unknown column "${reference.column}" on table "${reference.qualifier}".`,
+            });
+            continue;
+        }
+
+        if (cteNames.has(qualifier) || hasDerivedTables) continue;
+
+        if (seenUnknownQualifiers.has(qualifier)) continue;
+        seenUnknownQualifiers.add(qualifier);
+
+        const suggestion = findClosestName(qualifier, new Set([...aliasMap.keys(), ...schemaMetadata.tables, ...cteNames]));
+        warnings.push({
+            start: reference.qualifierStart,
+            end: reference.qualifierEnd,
+            message: suggestion
+                ? `Unknown table or alias "${reference.qualifier}" — did you mean ${suggestion}?`
+                : `Unknown table or alias "${reference.qualifier}".`,
+        });
+    }
+
+    return warnings;
 }
 
 function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadata()) {
@@ -1259,14 +1495,20 @@ function activate(context) {
         return configured
             .filter(pattern => typeof pattern === 'string')
             .map(pattern => pattern.trim())
-            .filter(Boolean);
+            .filter(Boolean)
+            .filter(isWorkspaceRelativeGlobPattern);
+    }
+
+    function semanticWarningsEnabled() {
+        return cfg().get('semanticWarnings', true);
     }
 
     async function refreshSchemaMetadata() {
         const tableDefinitionFiles = getConfiguredTableDefinitionFiles();
         const refreshVersion = ++schemaRefreshVersion;
+        const workspaceFolders = vscode.workspace.workspaceFolders || [];
 
-        if (!tableDefinitionFiles.length || !vscode.workspace.findFiles || !vscode.workspace.fs) {
+        if (!tableDefinitionFiles.length || !workspaceFolders.length || !vscode.workspace.findFiles || !vscode.workspace.fs || !vscode.RelativePattern) {
             schemaMetadata = createEmptySchemaMetadata();
             vscode.window.visibleTextEditors.forEach(applyDecorations);
             return;
@@ -1276,26 +1518,28 @@ function activate(context) {
         const seenUris = new Set();
 
         for (const pattern of tableDefinitionFiles) {
-            let uris = [];
-            try {
-                uris = await vscode.workspace.findFiles(pattern);
-            } catch (err) {
-                console.warn(`[jsqlSyntax] Failed to search for table definitions using "${pattern}":`, err);
-                continue;
-            }
-
-            for (const uri of uris) {
-                const key = uri.toString();
-                if (seenUris.has(key)) continue;
-                seenUris.add(key);
-
+            for (const workspaceFolder of workspaceFolders) {
+                let uris = [];
                 try {
-                    const bytes = await vscode.workspace.fs.readFile(uri);
-                    const fileMetadata = parseTableDefinitionFile(Buffer.from(bytes).toString('utf8'));
-                    fileMetadata.sourceUris.add(key);
-                    mergeSchemaMetadata(nextMetadata, fileMetadata);
+                    uris = await vscode.workspace.findFiles(new vscode.RelativePattern(workspaceFolder, pattern));
                 } catch (err) {
-                    console.warn(`[jsqlSyntax] Failed to read table definition file "${key}":`, err);
+                    console.warn(`[jsqlSyntax] Failed to search for table definitions using "${pattern}" in workspace "${workspaceFolder.name}":`, err);
+                    continue;
+                }
+
+                for (const uri of uris) {
+                    const key = uri.toString();
+                    if (seenUris.has(key)) continue;
+                    seenUris.add(key);
+
+                    try {
+                        const bytes = await vscode.workspace.fs.readFile(uri);
+                        const fileMetadata = parseTableDefinitionFile(Buffer.from(bytes).toString('utf8'));
+                        fileMetadata.sourceUris.add(key);
+                        mergeSchemaMetadata(nextMetadata, fileMetadata);
+                    } catch (err) {
+                        console.warn(`[jsqlSyntax] Failed to read table definition file "${key}":`, err);
+                    }
                 }
             }
         }
@@ -1421,6 +1665,18 @@ function activate(context) {
                 const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
                 diag.source = 'jsql';
                 docDiagnostics.push(diag);
+            }
+
+            if (semanticWarningsEnabled()) {
+                for (const issue of findSemanticWarnings(content, schemaMetadata)) {
+                    const range = new vscode.Range(
+                        doc.positionAt(start + issue.start),
+                        doc.positionAt(start + issue.end)
+                    );
+                    const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
+                    diag.source = 'jsql';
+                    docDiagnostics.push(diag);
+                }
             }
 
             for (const idx of findUnmatchedBrackets(content)) {
@@ -1561,6 +1817,10 @@ function activate(context) {
 
         if (e.affectsConfiguration('jsqlSyntax.tableDefinitionFiles')) {
             scheduleSchemaRefresh();
+        }
+
+        if (e.affectsConfiguration('jsqlSyntax.semanticWarnings')) {
+            vscode.window.visibleTextEditors.forEach(applyDecorations);
         }
     }, null, context.subscriptions);
 
