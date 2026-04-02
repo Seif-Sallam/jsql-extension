@@ -67,7 +67,7 @@ const ALL_SQL_KEYWORDS = new Set([
     'HOUR_MINUTE', 'DAY_MICROSECOND', 'DAY_SECOND', 'DAY_MINUTE', 'DAY_HOUR', 'YEAR_MONTH',
     'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'NULLIF', 'IFNULL', 'IF', 'ROW', 'CONCAT', 'CONCAT_WS',
     'SUBSTRING', 'SUBSTR', 'LENGTH', 'TRIM', 'LTRIM', 'RTRIM', 'UPPER', 'LOWER', 'REPLACE', 'INSTR',
-    'DATE', 'DATE_FORMAT', 'DATE_ADD', 'DATE_SUB', 'DATEDIFF', 'NOW', 'CURDATE', 'CAST', 'CONVERT',
+    'DATE', 'DATE_FORMAT', 'TIME_FORMAT', 'DATE_ADD', 'DATE_SUB', 'DATEDIFF', 'NOW', 'CURDATE', 'CAST', 'CONVERT',
     'GROUP_CONCAT', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LEAD', 'LAG', 'FIRST_VALUE', 'LAST_VALUE',
     'ROUND', 'FLOOR', 'CEIL', 'CEILING', 'ABS', 'MOD', 'POWER', 'GREATEST', 'LEAST', 'TIMESTAMPDIFF', 'EXTRACT',
     'JSON', 'JSON_EXTRACT', 'JSON_UNQUOTE',
@@ -712,7 +712,7 @@ const SPECIFIC_PATTERNS_SQL = [
         key: 'keyword'
     },
     {
-        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|ROW|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|GROUPING|JSON_ARRAYAGG|JSON_OBJECTAGG|POSITION|LOCATE|FIND_IN_SET|FIELD|UUID|DATABASE|SCHEMA)\s*(?=\()/gi,
+        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|ROW|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|TIME_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|GROUPING|JSON_ARRAYAGG|JSON_OBJECTAGG|POSITION|LOCATE|FIND_IN_SET|FIELD|UUID|DATABASE|SCHEMA)\s*(?=\()/gi,
         key: 'function'
     },
     ..._PATTERNS_TAIL,
@@ -725,7 +725,7 @@ const SPECIFIC_PATTERNS_BQ = [
         key: 'keyword'
     },
     {
-        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|GROUPING|JSON_ARRAYAGG|JSON_OBJECTAGG|POSITION|LOCATE|FIND_IN_SET|FIELD|UUID|DATABASE|SCHEMA|STRING_AGG|ARRAY_AGG|ARRAY_LENGTH|ARRAY_TO_STRING|ARRAY_CONCAT|ARRAY_REVERSE|GENERATE_ARRAY|ANY_VALUE|COUNTIF|LOGICAL_AND|LOGICAL_OR|APPROX_COUNT_DISTINCT|PERCENTILE_CONT|PERCENTILE_DISC|PERCENT_RANK|CUME_DIST|NTILE|NTH_VALUE|REGEXP_REPLACE|REGEXP_EXTRACT|REGEXP_CONTAINS|DATE_TRUNC|TIMESTAMP_TRUNC|DATETIME_TRUNC|DATETIME_ADD|DATETIME_SUB|DATETIME_DIFF|TIMESTAMP_ADD|TIMESTAMP_SUB|TIMESTAMP_DIFF|DATE_DIFF|PARSE_DATE|PARSE_TIMESTAMP|PARSE_DATETIME|FORMAT_DATE|FORMAT_TIMESTAMP|FORMAT_DATETIME|CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME|CURRENT_DATETIME|SAFE_DIVIDE|SAFE_CAST|GENERATE_UUID|SPLIT|STARTS_WITH|ENDS_WITH|STRPOS|LPAD|RPAD|REPEAT|REVERSE|CHAR_LENGTH|BYTE_LENGTH|FORMAT|TO_BASE64|FROM_BASE64|TO_HEX|FROM_HEX|SHA256|MD5|FARM_FINGERPRINT|JSON_VALUE|JSON_QUERY|JSON_EXTRACT_SCALAR|JSON_EXTRACT_ARRAY|JSON_OBJECT|JSON_ARRAY|BIT_AND|BIT_OR|BIT_XOR|BIT_COUNT|RANGE_BUCKET|STRUCT|UNNEST|ARRAY)\s*(?=\()/gi,
+        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|TIME_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|GROUPING|JSON_ARRAYAGG|JSON_OBJECTAGG|POSITION|LOCATE|FIND_IN_SET|FIELD|UUID|DATABASE|SCHEMA|STRING_AGG|ARRAY_AGG|ARRAY_LENGTH|ARRAY_TO_STRING|ARRAY_CONCAT|ARRAY_REVERSE|GENERATE_ARRAY|ANY_VALUE|COUNTIF|LOGICAL_AND|LOGICAL_OR|APPROX_COUNT_DISTINCT|PERCENTILE_CONT|PERCENTILE_DISC|PERCENT_RANK|CUME_DIST|NTILE|NTH_VALUE|REGEXP_REPLACE|REGEXP_EXTRACT|REGEXP_CONTAINS|DATE_TRUNC|TIMESTAMP_TRUNC|DATETIME_TRUNC|DATETIME_ADD|DATETIME_SUB|DATETIME_DIFF|TIMESTAMP_ADD|TIMESTAMP_SUB|TIMESTAMP_DIFF|DATE_DIFF|PARSE_DATE|PARSE_TIMESTAMP|PARSE_DATETIME|FORMAT_DATE|FORMAT_TIMESTAMP|FORMAT_DATETIME|CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME|CURRENT_DATETIME|SAFE_DIVIDE|SAFE_CAST|GENERATE_UUID|SPLIT|STARTS_WITH|ENDS_WITH|STRPOS|LPAD|RPAD|REPEAT|REVERSE|CHAR_LENGTH|BYTE_LENGTH|FORMAT|TO_BASE64|FROM_BASE64|TO_HEX|FROM_HEX|SHA256|MD5|FARM_FINGERPRINT|JSON_VALUE|JSON_QUERY|JSON_EXTRACT_SCALAR|JSON_EXTRACT_ARRAY|JSON_OBJECT|JSON_ARRAY|BIT_AND|BIT_OR|BIT_XOR|BIT_COUNT|RANGE_BUCKET|STRUCT|UNNEST|ARRAY)\s*(?=\()/gi,
         key: 'function'
     },
     ..._PATTERNS_TAIL,
@@ -854,9 +854,33 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
     const cteNames = findCTENames(sql, opaque);
     const { tableReferences } = findTableReferences(sql, schemaMetadata, cteNames, opaque);
 
-    // Build set of columns that exist in 2+ tables currently referenced in the query
+    // Build paren depth at each position so we can exclude subquery-scoped tables
+    const depths = new Array(sql.length).fill(0);
+    let d = 0;
+    for (let i = 0; i < sql.length; i++) {
+        if (!opaque[i]) {
+            if (sql[i] === '(') d++;
+            else if (sql[i] === ')') d = Math.max(0, d - 1);
+        }
+        depths[i] = d;
+    }
+
+    // Find the first UNION/INTERSECT/EXCEPT at depth 0 — each branch is an independent scope
+    let queryEnd = sql.length;
+    const setOpRe = /\b(?:UNION|INTERSECT|EXCEPT)\b/gi;
+    let so;
+    while ((so = setOpRe.exec(sql)) !== null) {
+        if (!opaque[so.index] && depths[so.index] === 0) { queryEnd = so.index; break; }
+    }
+
+    // Only consider top-level table references (depth 0, before first UNION/INTERSECT/EXCEPT)
+    const topLevelRefs = tableReferences.filter(ref =>
+        depths[ref.tableStart] === 0 && ref.tableStart < queryEnd
+    );
+
+    // Build set of columns that exist in 2+ top-level tables
     const colTableCount = new Map();
-    for (const ref of tableReferences) {
+    for (const ref of topLevelRefs) {
         const cols = schemaMetadata.tableColumns.get(ref.normalizedName);
         if (!cols) continue;
         for (const col of cols) {
@@ -878,12 +902,14 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
     );
     if (!ambiguous.size) return diagnostics;
 
-    // Find unqualified uses of ambiguous columns (not preceded by `.`)
+    // Find unqualified uses of ambiguous columns — only at top-level scope
     const identRe = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
     let m;
     while ((m = identRe.exec(sql)) !== null) {
         const col = m[1].toLowerCase();
         if (!ambiguous.has(col)) continue;
+        if (m.index >= queryEnd) continue;                // past first UNION branch
+        if (depths[m.index] > 0) continue;                // inside subquery
         if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
         // Skip if preceded by `.` (qualified reference) or `:` (bind parameter)
         if (m.index > 0 && (sql[m.index - 1] === '.' || sql[m.index - 1] === ':')) continue;
@@ -2633,7 +2659,7 @@ function activate(context) {
 
 
 
-        vscode.commands.registerCommand('jsqlSyntax.selectTheme', () => {
+    vscode.commands.registerCommand('jsqlSyntax.selectTheme', () => {
         const originalTheme = cfg().get('theme', 'dracula');
 
         const qp = vscode.window.createQuickPick();
@@ -2861,7 +2887,7 @@ function activate(context) {
                 // Check if word is preceded by qualifier. (e.g. uc.created_at)
                 const lineText = doc.lineAt(position).text;
                 const textBeforeWord = lineText.slice(0, wordRange.start.character);
-                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/. exec(textBeforeWord);
+                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(textBeforeWord);
 
                 if (qualifierMatch) {
                     const qualifier = qualifierMatch[1].toLowerCase();
@@ -2998,7 +3024,7 @@ function activate(context) {
 
                 const lineText = doc.lineAt(position).text;
                 const textBefore = lineText.slice(0, position.character);
-                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/. exec(textBefore);
+                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(textBefore);
                 if (!qualifierMatch) return null;
 
                 const qualifier = qualifierMatch[1].toLowerCase();

@@ -776,6 +776,37 @@ const ambiguousColumnCases = [
         input: 'SELECT created_at FROM user_contract',
         expectedCount: 0,
     },
+    {
+        name: 'does not flag same column name in UNION branches as ambiguous',
+        metadataFiles: [[
+            "class User(Model):\n    __tablename__ = 'user'\n    id_user = sa.Column(INT)\n    idp_user_code = sa.Column(VARCHAR(255))",
+        ].join('\n'), [
+            "class UserAlias(Model):\n    __tablename__ = 'user_alias'\n    id_user = sa.Column(INT)\n    idp_user_code = sa.Column(VARCHAR(255))",
+        ].join('\n')],
+        input: [
+            'SELECT idp_user_code FROM user WHERE id_user = :id_user',
+            'UNION',
+            'SELECT idp_user_code FROM user_alias WHERE id_user = :id_user',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'does not flag column inside subquery as ambiguous with outer query',
+        metadataFiles: [[
+            "class BusinessUnit(Model):\n    __tablename__ = 'business_unit'\n    id_business_unit = sa.Column(INT)\n    code = sa.Column(VARCHAR(255))",
+        ].join('\n'), [
+            "class Facility(Model):\n    __tablename__ = 'facility'\n    id_facility = sa.Column(INT)\n    id_business_unit = sa.Column(INT)",
+        ].join('\n')],
+        input: [
+            'SELECT f.id_facility',
+            'FROM facility f',
+            'JOIN business_unit fbu ON fbu.id_business_unit = f.id_business_unit',
+            'WHERE f.id_facility IN (',
+            '    SELECT id_facility FROM facility WHERE id_business_unit = 1',
+            ')',
+        ].join('\n'),
+        expectedCount: 0,
+    },
 ];
 
 const duplicateAliasCases = [
