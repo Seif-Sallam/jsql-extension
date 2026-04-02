@@ -708,6 +708,29 @@ const commaWarningCases = [
     },
 ];
 
+const { detectDuplicateAliases } = loadExtensionInternals();
+
+const duplicateAliasCases = [
+    {
+        name: 'warns on duplicate AS alias in SELECT',
+        input: ['SELECT', '    a AS x,', '    b AS x', 'FROM t'].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'does not warn when aliases are unique',
+        input: ['SELECT', '    a AS x,', '    b AS y', 'FROM t'].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'does not warn for same alias in separate SELECT blocks',
+        input: [
+            'WITH cte AS (SELECT a AS x FROM t1)',
+            'SELECT b AS x FROM t2',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+];
+
 const bracketCases = [
     {
         name: 'finds matching parentheses in nested SQL expressions',
@@ -888,6 +911,16 @@ function runUnmatchedBracketCases() {
     }
 }
 
+function runDuplicateAliasCases() {
+    for (const testCase of duplicateAliasCases) {
+        assert.strictEqual(
+            detectDuplicateAliases(testCase.input).length,
+            testCase.expectedCount,
+            `detectDuplicateAliases failed: ${testCase.name}`
+        );
+    }
+}
+
 function main() {
     runFormatCases();
     runRangeCases();
@@ -897,9 +930,10 @@ function main() {
     runWorkspacePatternCases();
     runSemanticWarningCases();
     runCommaWarningCases();
+    runDuplicateAliasCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + commaWarningCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + commaWarningCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

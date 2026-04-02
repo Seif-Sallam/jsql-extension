@@ -68,6 +68,16 @@ const ALL_SQL_KEYWORDS = new Set([
     'GROUP_CONCAT', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LEAD', 'LAG', 'FIRST_VALUE', 'LAST_VALUE',
     'ROUND', 'FLOOR', 'CEIL', 'CEILING', 'ABS', 'MOD', 'POWER', 'GREATEST', 'LEAST', 'TIMESTAMPDIFF', 'EXTRACT',
     'JSON', 'JSON_EXTRACT', 'JSON_UNQUOTE',
+    // General SQL keywords
+    'LATERAL', 'RECURSIVE', 'MATCH', 'AGAINST', 'REGEXP', 'RLIKE',
+    'EXPLAIN', 'ANALYZE', 'TRUNCATE', 'REPLACE',
+    'ROLLUP', 'CUBE', 'GROUPING', 'SEPARATOR',
+    'MERGE', 'MATCHED',
+    'ESCAPE', 'COLLATE', 'BINARY', 'STRAIGHT_JOIN', 'WITHIN',
+    // General SQL functions
+    'JSON_ARRAYAGG', 'JSON_OBJECTAGG',
+    'POSITION', 'LOCATE', 'FIND_IN_SET', 'FIELD',
+    'UUID', 'DATABASE', 'SCHEMA',
     // BigQuery / Spanner clauses and type keywords
     'QUALIFY', 'TABLESAMPLE', 'PIVOT', 'UNPIVOT',
     'STRUCT', 'ARRAY', 'UNNEST',
@@ -564,11 +574,11 @@ function formatSQL(sql) {
     s = s.replace(/\s+/g, ' ').trim();
 
     // Uppercase keywords
-    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|ROW|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT)\b/gi, m => m.toUpperCase());
+    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|ROW|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT|LATERAL|RECURSIVE|MATCH|AGAINST|REGEXP|RLIKE|EXPLAIN|ANALYZE|TRUNCATE|REPLACE|ROLLUP|CUBE|GROUPING|SEPARATOR|MERGE|MATCHED|ESCAPE|COLLATE|BINARY|STRAIGHT_JOIN|WITHIN)\b/gi, m => m.toUpperCase());
 
     // Break before top-level clauses — longer phrases first to avoid partial matches
     s = s.replace(
-        /\b(UNION ALL|GROUP BY|ORDER BY|INSERT INTO|DELETE FROM|SELECT|FROM|WHERE|HAVING|QUALIFY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|RETURNING|VALUES|SET|WITH)\b/g,
+        /\b(UNION ALL|GROUP BY|ORDER BY|INSERT INTO|REPLACE INTO|DELETE FROM|WHEN MATCHED|WHEN NOT MATCHED|SELECT|FROM|WHERE|HAVING|QUALIFY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|RETURNING|VALUES|SET|WITH|MERGE|EXPLAIN|ANALYZE|TRUNCATE)\b/g,
         '\n$1'
     );
 
@@ -672,7 +682,7 @@ const _PATTERNS_HEAD = [
     { re: /'[^']*'/g, key: 'string' },
     { re: /"[^"]*"/g, key: 'string' },
     { re: /:[a-zA-Z_][a-zA-Z0-9_]*/g, key: 'param' },
-    { re: /\b(TRUE|FALSE)\b/gi, key: 'boolean' },
+    { re: /\b(TRUE|FALSE|NULL)\b/gi, key: 'boolean' },
 ];
 const _PATTERNS_TAIL = [
     { re: /\b\d+(\.\d+)?\b/g, key: 'number' },
@@ -682,11 +692,11 @@ const _PATTERNS_TAIL = [
 const SPECIFIC_PATTERNS_SQL = [
     ..._PATTERNS_HEAD,
     {
-        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON)\b/gi,
+        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON|LATERAL|RECURSIVE|MATCH|AGAINST|REGEXP|RLIKE|EXPLAIN|ANALYZE|TRUNCATE|REPLACE|ROLLUP|CUBE|GROUPING|SEPARATOR|MERGE|MATCHED|ESCAPE|COLLATE|BINARY|STRAIGHT_JOIN|WITHIN)\b/gi,
         key: 'keyword'
     },
     {
-        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|ROW|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE)\s*(?=\()/gi,
+        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|ROW|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|GROUPING|JSON_ARRAYAGG|JSON_OBJECTAGG|POSITION|LOCATE|FIND_IN_SET|FIELD|UUID|DATABASE|SCHEMA)\s*(?=\()/gi,
         key: 'function'
     },
     ..._PATTERNS_TAIL,
@@ -695,11 +705,11 @@ const SPECIFIC_PATTERNS_SQL = [
 const SPECIFIC_PATTERNS_BQ = [
     ..._PATTERNS_HEAD,
     {
-        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT)\b/gi,
+        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT|LATERAL|RECURSIVE|MATCH|AGAINST|REGEXP|RLIKE|EXPLAIN|ANALYZE|TRUNCATE|REPLACE|ROLLUP|CUBE|GROUPING|SEPARATOR|MERGE|MATCHED|ESCAPE|COLLATE|BINARY|STRAIGHT_JOIN|WITHIN)\b/gi,
         key: 'keyword'
     },
     {
-        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|STRING_AGG|ARRAY_AGG|ARRAY_LENGTH|ARRAY_TO_STRING|ARRAY_CONCAT|ARRAY_REVERSE|GENERATE_ARRAY|ANY_VALUE|COUNTIF|LOGICAL_AND|LOGICAL_OR|APPROX_COUNT_DISTINCT|PERCENTILE_CONT|PERCENTILE_DISC|PERCENT_RANK|CUME_DIST|NTILE|NTH_VALUE|REGEXP_REPLACE|REGEXP_EXTRACT|REGEXP_CONTAINS|DATE_TRUNC|TIMESTAMP_TRUNC|DATETIME_TRUNC|DATETIME_ADD|DATETIME_SUB|DATETIME_DIFF|TIMESTAMP_ADD|TIMESTAMP_SUB|TIMESTAMP_DIFF|DATE_DIFF|PARSE_DATE|PARSE_TIMESTAMP|PARSE_DATETIME|FORMAT_DATE|FORMAT_TIMESTAMP|FORMAT_DATETIME|CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME|CURRENT_DATETIME|SAFE_DIVIDE|SAFE_CAST|GENERATE_UUID|SPLIT|STARTS_WITH|ENDS_WITH|STRPOS|LPAD|RPAD|REPEAT|REVERSE|CHAR_LENGTH|BYTE_LENGTH|FORMAT|TO_BASE64|FROM_BASE64|TO_HEX|FROM_HEX|SHA256|MD5|FARM_FINGERPRINT|JSON_VALUE|JSON_QUERY|JSON_EXTRACT_SCALAR|JSON_EXTRACT_ARRAY|JSON_OBJECT|JSON_ARRAY|BIT_AND|BIT_OR|BIT_XOR|BIT_COUNT|RANGE_BUCKET|STRUCT|UNNEST|ARRAY)\s*(?=\()/gi,
+        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|GROUPING|JSON_ARRAYAGG|JSON_OBJECTAGG|POSITION|LOCATE|FIND_IN_SET|FIELD|UUID|DATABASE|SCHEMA|STRING_AGG|ARRAY_AGG|ARRAY_LENGTH|ARRAY_TO_STRING|ARRAY_CONCAT|ARRAY_REVERSE|GENERATE_ARRAY|ANY_VALUE|COUNTIF|LOGICAL_AND|LOGICAL_OR|APPROX_COUNT_DISTINCT|PERCENTILE_CONT|PERCENTILE_DISC|PERCENT_RANK|CUME_DIST|NTILE|NTH_VALUE|REGEXP_REPLACE|REGEXP_EXTRACT|REGEXP_CONTAINS|DATE_TRUNC|TIMESTAMP_TRUNC|DATETIME_TRUNC|DATETIME_ADD|DATETIME_SUB|DATETIME_DIFF|TIMESTAMP_ADD|TIMESTAMP_SUB|TIMESTAMP_DIFF|DATE_DIFF|PARSE_DATE|PARSE_TIMESTAMP|PARSE_DATETIME|FORMAT_DATE|FORMAT_TIMESTAMP|FORMAT_DATETIME|CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME|CURRENT_DATETIME|SAFE_DIVIDE|SAFE_CAST|GENERATE_UUID|SPLIT|STARTS_WITH|ENDS_WITH|STRPOS|LPAD|RPAD|REPEAT|REVERSE|CHAR_LENGTH|BYTE_LENGTH|FORMAT|TO_BASE64|FROM_BASE64|TO_HEX|FROM_HEX|SHA256|MD5|FARM_FINGERPRINT|JSON_VALUE|JSON_QUERY|JSON_EXTRACT_SCALAR|JSON_EXTRACT_ARRAY|JSON_OBJECT|JSON_ARRAY|BIT_AND|BIT_OR|BIT_XOR|BIT_COUNT|RANGE_BUCKET|STRUCT|UNNEST|ARRAY)\s*(?=\()/gi,
         key: 'function'
     },
     ..._PATTERNS_TAIL,
@@ -818,6 +828,62 @@ function beginSelectContext(lineText, selectIndex, baseParenDepth, baseCaseDepth
     }
 
     return inlineSplit ? null : selectContext;
+}
+
+function detectDuplicateAliases(sql) {
+    const diagnostics = [];
+    const opaque = buildOpaqueMask(sql);
+    const lines = sql.split('\n');
+    let offset = 0;
+    let inSelect = false;
+    let parenDepth = 0;
+    let selectAliases = new Map(); // normalized -> { start, end }
+
+    for (const rawLine of lines) {
+        const lineOffset = offset;
+        offset += rawLine.length + 1;
+
+        const withoutComment = stripComment(rawLine);
+        const trimmed = withoutComment.trim();
+        if (!trimmed) continue;
+
+        const depthAtLineStart = parenDepth;
+        for (const ch of trimmed) {
+            if (ch === '(') parenDepth++;
+            else if (ch === ')') parenDepth--;
+        }
+        if (depthAtLineStart > 0) continue;
+
+        if (!inSelect) {
+            if (!SELECT_START_RE.test(trimmed)) continue;
+            selectAliases = new Map();
+            inSelect = true;
+            const remainder = trimmed.replace(SELECT_PREFIX_RE, '');
+            if (splitAtFrom(remainder)) inSelect = false;
+            continue;
+        }
+
+        if (splitAtFrom(trimmed)) { inSelect = false; continue; }
+
+        const lineStart = lineOffset + rawLine.indexOf(trimmed);
+        const asRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+        let m;
+        while ((m = asRe.exec(trimmed)) !== null) {
+            const alias = m[1];
+            if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+            const start = lineStart + m.index + m[0].length - alias.length;
+            const end = start + alias.length;
+            if (rangeOverlapsOpaque(opaque, start, end)) continue;
+            const key = alias.toLowerCase();
+            if (selectAliases.has(key)) {
+                diagnostics.push({ start, end, message: `Duplicate alias "${alias}" in SELECT.` });
+            } else {
+                selectAliases.set(key, { start, end });
+            }
+        }
+    }
+
+    return diagnostics;
 }
 
 function detectMissingSelectCommas(sql) {
@@ -1109,8 +1175,18 @@ function createEmptySchemaMetadata() {
         tables: new Set(),
         columns: new Set(),
         tableColumns: new Map(),
+        columnTypes: new Map(), // table -> Map<column, type>
         sourceUris: new Set(),
     };
+}
+
+function extractColumnType(raw) {
+    if (!raw) return '';
+    const t = raw.trim();
+    if (/^ForeignKey\b/i.test(t)) return '';
+    // Unwrap namespace: sa.String -> String, types.JSON -> JSON
+    const parts = t.split('.');
+    return parts[parts.length - 1].trim();
 }
 
 function isWorkspaceRelativeGlobPattern(pattern) {
@@ -1169,6 +1245,17 @@ function mergeSchemaMetadata(target, source) {
         }
     }
 
+    for (const [tableName, colTypes] of source.columnTypes.entries()) {
+        let targetColTypes = target.columnTypes.get(tableName);
+        if (!targetColTypes) {
+            targetColTypes = new Map();
+            target.columnTypes.set(tableName, targetColTypes);
+        }
+        for (const [col, type] of colTypes.entries()) {
+            targetColTypes.set(col, type);
+        }
+    }
+
     for (const sourceUri of source.sourceUris) {
         target.sourceUris.add(sourceUri);
     }
@@ -1193,15 +1280,20 @@ function parseTableDefinitionFile(text) {
 
         const tableName = tableNameMatch[2].toLowerCase();
         const columns = new Set();
-        const columnRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[\w.]+\.)?(?:Column|mapped_column)\s*\(/gm;
+        const colTypes = new Map();
+        const columnRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[\w.]+\.)?(?:Column|mapped_column)\s*\(\s*((?:[^,()]+|\([^)]*\))*)/gm;
         let columnMatch;
         while ((columnMatch = columnRe.exec(block)) !== null) {
-            columns.add(columnMatch[1].toLowerCase());
-            metadata.columns.add(columnMatch[1].toLowerCase());
+            const colName = columnMatch[1].toLowerCase();
+            columns.add(colName);
+            metadata.columns.add(colName);
+            const colType = extractColumnType(columnMatch[2]);
+            if (colType) colTypes.set(colName, colType);
         }
 
         metadata.tables.add(tableName);
         metadata.tableColumns.set(tableName, columns);
+        metadata.columnTypes.set(tableName, colTypes);
     }
 
     return metadata;
@@ -1541,6 +1633,25 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
+    // Alias usages — tag every `alias.something` qualifier with alias color
+    const aliasNames = new Set(
+        aliasRanges.map(r => sql.slice(r.start, r.end).toLowerCase())
+    );
+    if (aliasNames.size > 0) {
+        const aliasUsageRe = /\b([A-Za-z_][A-Za-z0-9_]*)(?=\.)/g;
+        while ((match = aliasUsageRe.exec(sql)) !== null) {
+            if (!aliasNames.has(match[1].toLowerCase())) continue;
+            const start = match.index;
+            const end = start + match[1].length;
+            if (rangeOverlapsOpaque(opaque, start, end)) continue;
+            let overlaps = false;
+            for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+            if (overlaps) continue;
+            addUniqueRange(aliasRanges, seenAliases, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+        }
+    }
+
     return { tableRanges, columnRanges, aliasRanges };
 }
 
@@ -1760,6 +1871,16 @@ function activate(context) {
                 docDiagnostics.push(diag);
             }
 
+            for (const issue of detectDuplicateAliases(content)) {
+                const range = new vscode.Range(
+                    doc.positionAt(start + issue.start),
+                    doc.positionAt(start + issue.end)
+                );
+                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
+                diag.source = 'jsql';
+                docDiagnostics.push(diag);
+            }
+
             for (const issue of detectMissingSelectCommas(content)) {
                 const range = new vscode.Range(
                     doc.positionAt(start + issue.start),
@@ -1941,6 +2062,103 @@ function activate(context) {
         scheduleSchemaRefresh();
     }, null, context.subscriptions);
 
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider('python', {
+            provideHover(doc, position) {
+                const text = doc.getText();
+                const offset = doc.offsetAt(position);
+                const sqlRanges = findSQLRanges(text);
+                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
+                if (!sqlRange) return null;
+
+                const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+                if (!wordRange) return null;
+                const word = doc.getText(wordRange).toLowerCase();
+
+                // Build alias map for this SQL block
+                const content = text.slice(sqlRange.start, sqlRange.end);
+                const cteNames = findCTENames(content);
+                const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
+
+                // Helper: render a table definition as a hover
+                function tableHover(tableName, label) {
+                    const columns = schemaMetadata.tableColumns.get(tableName);
+                    const types = schemaMetadata.columnTypes.get(tableName);
+                    const md = new vscode.MarkdownString();
+                    md.appendMarkdown(`**${tableName}** *(${label})*\n\n`);
+                    if (columns && columns.size > 0) {
+                        md.appendMarkdown('| Column | Type |\n|---|---|\n');
+                        for (const col of [...columns].sort()) {
+                            const type = types?.get(col) || '—';
+                            md.appendMarkdown(`| \`${col}\` | \`${type}\` |\n`);
+                        }
+                    }
+                    return new vscode.Hover(md, wordRange);
+                }
+
+                // Check if word is preceded by qualifier. (e.g. uc.created_at)
+                const lineText = doc.lineAt(position).text;
+                const textBeforeWord = lineText.slice(0, wordRange.start.character);
+                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/. exec(textBeforeWord);
+
+                if (qualifierMatch) {
+                    const qualifier = qualifierMatch[1].toLowerCase();
+                    // Resolve alias or direct table name
+                    const ref = aliasMap.get(qualifier);
+                    const tableName = ref ? ref.normalizedName : (schemaMetadata.tables.has(qualifier) ? qualifier : null);
+                    if (tableName && schemaMetadata.columns.has(word)) {
+                        const type = schemaMetadata.columnTypes.get(tableName)?.get(word) || '—';
+                        const md = new vscode.MarkdownString();
+                        md.appendMarkdown(`**${word}** *(column of \`${tableName}\`)*\n\nType: \`${type}\``);
+                        return new vscode.Hover(md, wordRange);
+                    }
+                    return null;
+                }
+
+                // Hovering over a table name
+                if (schemaMetadata.tables.has(word)) {
+                    return tableHover(word, 'table');
+                }
+
+                // Hovering over an alias (e.g. uc, scj) — show the table it refers to
+                const ref = aliasMap.get(word);
+                if (ref && schemaMetadata.tables.has(ref.normalizedName)) {
+                    return tableHover(ref.normalizedName, `alias for ${ref.tableName}`);
+                }
+
+                // Unqualified column — filter to tables actually used in this query
+                if (schemaMetadata.columns.has(word)) {
+                    const tablesInQuery = new Set([...aliasMap.values()].map(r => r.normalizedName));
+                    let entries = [];
+                    for (const [tableName, cols] of schemaMetadata.tableColumns.entries()) {
+                        if (!cols.has(word)) continue;
+                        if (tablesInQuery.size > 0 && !tablesInQuery.has(tableName)) continue;
+                        const type = schemaMetadata.columnTypes.get(tableName)?.get(word) || '—';
+                        entries.push({ table: tableName, type });
+                    }
+                    // Fall back to all tables if no query tables matched
+                    if (entries.length === 0) {
+                        for (const [tableName, cols] of schemaMetadata.tableColumns.entries()) {
+                            if (!cols.has(word)) continue;
+                            const type = schemaMetadata.columnTypes.get(tableName)?.get(word) || '—';
+                            entries.push({ table: tableName, type });
+                        }
+                    }
+                    if (entries.length === 0) return null;
+                    const md = new vscode.MarkdownString();
+                    md.appendMarkdown(`**${word}** *(column)*\n\n`);
+                    md.appendMarkdown('| Table | Type |\n|---|---|\n');
+                    for (const { table, type } of entries) {
+                        md.appendMarkdown(`| \`${table}\` | \`${type}\` |\n`);
+                    }
+                    return new vscode.Hover(md, wordRange);
+                }
+
+                return null;
+            }
+        })
+    );
+
     context.subscriptions.push(bracketDec);
     context.subscriptions.push(bracketErrorDec);
     vscode.window.visibleTextEditors.forEach(applyDecorations);
@@ -1948,4 +2166,4 @@ function activate(context) {
 }
 
 function deactivate() { }
-module.exports = { activate, deactivate, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets };
+module.exports = { activate, deactivate, detectMissingSelectCommas, detectDuplicateAliases, findMatchingBracket, findUnmatchedBrackets };
