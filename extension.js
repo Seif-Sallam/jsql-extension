@@ -889,9 +889,13 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
         if (!opaque[so.index] && depths[so.index] === 0) { queryEnd = so.index; break; }
     }
 
-    // Only consider top-level table references (depth 0, before first UNION/INTERSECT/EXCEPT)
+    // Only consider top-level SELECT sources (depth 0, before first UNION/INTERSECT/EXCEPT)
+    // Exclude INSERT/INTO targets — they are write destinations, not query sources
     const topLevelRefs = tableReferences.filter(ref =>
-        depths[ref.tableStart] === 0 && ref.tableStart < queryEnd
+        depths[ref.tableStart] === 0 &&
+        ref.tableStart < queryEnd &&
+        ref.keyword !== 'INTO' &&
+        ref.keyword !== 'TABLE'
     );
 
     // Build set of columns that exist in 2+ top-level tables
@@ -1231,7 +1235,12 @@ function findSQLRanges(text) {
         const quote = m[1];
         const lineStart = text.lastIndexOf('\n', m.index - 1) + 1;
         const beforeQuote = text.slice(lineStart, m.index);
-        if (!beforeQuote.trim()) continue;
+        if (!beforeQuote.trim()) {
+            // Skip past the closing quote so it isn't treated as a new opening
+            const closingIdx = text.indexOf(quote, m.index + quote.length);
+            if (closingIdx !== -1) TRIPLE.lastIndex = closingIdx + quote.length;
+            continue;
+        }
         const start = m.index + quote.length;
         const end = text.indexOf(quote, start);
         if (end !== -1 && SQL_START.test(text.slice(start, end))) {
@@ -1485,6 +1494,8 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildOpaque
     let match;
 
     while ((match = tableRefRe.exec(sql)) !== null) {
+        // Skip UPDATE that is part of ON DUPLICATE KEY UPDATE
+        if (/^UPDATE$/i.test(match[1]) && /\bKEY\s*$/i.test(sql.slice(0, match.index))) continue;
         const tableName = match[2];
         const tableStart = match.index + match[0].indexOf(tableName);
         const tableEnd = tableStart + tableName.length;
@@ -1512,6 +1523,7 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildOpaque
             tableEnd,
             aliasStart,
             aliasEnd,
+            keyword: match[1].toUpperCase().replace(/\s+/g, ' '),
             knownMetadata: schemaMetadata.tables.has(normalizedName),
             isCTE: cteNames.has(normalizedName),
         };
@@ -1759,8 +1771,10 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     const occupied = new Set();
     const tableRefRe = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/gi;
     let match;
+    const isOnDuplicateKeyUpdate = (idx) => /\bKEY\s*$/i.test(sql.slice(0, idx));
 
     while ((match = tableRefRe.exec(sql)) !== null) {
+        if (/^UPDATE\s/i.test(match[0]) && isOnDuplicateKeyUpdate(match.index)) continue;
         const start = match.index + match[0].length - match[1].length;
         const end = start + match[1].length;
         if (rangeOverlapsOpaque(opaque, start, end)) continue;
