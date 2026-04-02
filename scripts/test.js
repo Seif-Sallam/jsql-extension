@@ -329,6 +329,16 @@ const semanticHighlightCases = [
         expectedColumns: [],
     },
     {
+        name: 'detects CTE with optional column list as a table',
+        input: [
+            'WITH jobs(ref) AS (VALUES ROW(1))',
+            'SELECT ref FROM jobs',
+        ].join('\n'),
+        metadata: createEmptySchemaMetadata(),
+        expectedTables: ['jobs'],
+        expectedColumns: [],
+    },
+    {
         name: 'highlights loaded table and column names separately',
         metadataFiles: [[
             'class UserTaskStep(Model):',
@@ -653,6 +663,22 @@ const commaWarningCases = [
             'FROM accounts',
         ].join('\n'),
         expectedCount: 1,
+    },
+    // Literal column values
+    {
+        name: 'warns on missing comma after number literal column',
+        input: ['SELECT', '    1', '    name', 'FROM t'].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'warns on missing comma after string literal column',
+        input: ['SELECT', "    'active'", '    name', 'FROM t'].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'does not warn when literal columns have commas',
+        input: ['SELECT', "    1,", "    'active',", '    name', 'FROM t'].join('\n'),
+        expectedCount: 0,
     },
     {
         name: 'does not warn when subquery column has a trailing comma',

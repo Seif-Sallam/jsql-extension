@@ -62,7 +62,7 @@ const ALL_SQL_KEYWORDS = new Set([
     'INTERVAL', 'MICROSECOND', 'SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR',
     'SECOND_MICROSECOND', 'MINUTE_MICROSECOND', 'MINUTE_SECOND', 'HOUR_MICROSECOND', 'HOUR_SECOND',
     'HOUR_MINUTE', 'DAY_MICROSECOND', 'DAY_SECOND', 'DAY_MINUTE', 'DAY_HOUR', 'YEAR_MONTH',
-    'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'NULLIF', 'IFNULL', 'IF', 'CONCAT', 'CONCAT_WS',
+    'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'NULLIF', 'IFNULL', 'IF', 'ROW', 'CONCAT', 'CONCAT_WS',
     'SUBSTRING', 'SUBSTR', 'LENGTH', 'TRIM', 'LTRIM', 'RTRIM', 'UPPER', 'LOWER', 'REPLACE', 'INSTR',
     'DATE', 'DATE_FORMAT', 'DATE_ADD', 'DATE_SUB', 'DATEDIFF', 'NOW', 'CURDATE', 'CAST', 'CONVERT',
     'GROUP_CONCAT', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LEAD', 'LAG', 'FIRST_VALUE', 'LAST_VALUE',
@@ -564,7 +564,7 @@ function formatSQL(sql) {
     s = s.replace(/\s+/g, ' ').trim();
 
     // Uppercase keywords
-    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT)\b/gi, m => m.toUpperCase());
+    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|ROW|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT)\b/gi, m => m.toUpperCase());
 
     // Break before top-level clauses — longer phrases first to avoid partial matches
     s = s.replace(
@@ -686,7 +686,7 @@ const SPECIFIC_PATTERNS_SQL = [
         key: 'keyword'
     },
     {
-        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE)\s*(?=\()/gi,
+        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|ROW|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE)\s*(?=\()/gi,
         key: 'function'
     },
     ..._PATTERNS_TAIL,
@@ -720,7 +720,7 @@ function stripComment(line) {
 function lineLooksLikeColumnStart(text) {
     if (!text) return false;
     if (CLAUSE_START_RE.test(text) || NON_COLUMN_CONTINUATION_RE.test(text)) return false;
-    return /^[A-Za-z_("*`[]/i.test(text);
+    return /^[A-Za-z_("*`['0-9]/i.test(text);
 }
 
 function lineEndsLikeColumnContinuation(text) {
@@ -912,6 +912,21 @@ function buildOpaqueMask(sql) {
             while (i < sql.length && sql[i] !== '\n') opaque[i++] = true;
             i--;
             continue;
+        }
+
+        // Jinja blocks: {{ }}, {% %}, {# #} (with optional - trimming)
+        if (sql[i] === '{' && i + 1 < sql.length) {
+            let close = null;
+            if (sql[i + 1] === '{') close = '}}';
+            else if (sql[i + 1] === '%') close = '%}';
+            else if (sql[i + 1] === '#') close = '#}';
+            if (close) {
+                const end = sql.indexOf(close, i + 2);
+                const until = end === -1 ? sql.length : end + close.length;
+                for (let j = i; j < until; j++) opaque[j] = true;
+                i = until - 1;
+                continue;
+            }
         }
 
         if (sql[i] === '\'' || sql[i] === '"') {
@@ -1213,7 +1228,7 @@ function normalizeTableName(name) {
 
 function findCTENames(sql, opaque = buildOpaqueMask(sql)) {
     const cteNames = new Set();
-    const cteRe = /\bWITH(?:\s+RECURSIVE)?\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(|,\s*([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(/gi;
+    const cteRe = /\bWITH(?:\s+RECURSIVE)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*AS\s*\(|,\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*AS\s*\(/gi;
     let match;
 
     while ((match = cteRe.exec(sql)) !== null) {
@@ -1427,8 +1442,9 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
-    // CTE names — identifier AS ( is unique to CTE definitions
-    const cteRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(/gi;
+    // CTE names — identifier AS ( is unique to CTE definitions.
+    // Optional column list: cte_name(col1, col2) AS ( — handled by (?:\([^)]*\))?
+    const cteRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*AS\s*\(/gi;
     while ((match = cteRe.exec(sql)) !== null) {
         const cteName = match[1];
         if (ALL_SQL_KEYWORDS.has(cteName.toUpperCase())) continue;
@@ -1473,12 +1489,14 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
-    // Implicit column aliases (AS is optional) — two safe patterns:
-    //   1. alias after closing paren:   COUNT(*) total,   (SELECT ...) sub,
-    //   2. alias after qualified column: u.name full_name,
-    // Both require the alias to be immediately before a comma or end of line
+    // Implicit column aliases (AS is optional) — triggers:
+    //   1. after closing paren:      COUNT(*) total,   (SELECT ...) sub,
+    //   2. after qualified column:   u.name full_name,
+    //   3. after string literal:     'active' status,
+    //   4. after number literal:     1 row_num,   42 id,
+    // All require the alias to be immediately before a comma or end of line
     // to avoid false positives in WHERE/ON conditions.
-    const implicitColAliasRe = /(?:\)|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|$))/gm;
+    const implicitColAliasRe = /(?:\)|'|\b\d+(?:\.\d+)?|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|\b(?:FROM|WHERE|HAVING|GROUP|ORDER|LIMIT|UNION|INTERSECT|EXCEPT)\b|$))/gm;
     while ((match = implicitColAliasRe.exec(sql)) !== null) {
         const alias = match[1];
         if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
