@@ -22,6 +22,10 @@
       {
         "command": "jsqlSyntax.formatSQL",
         "title": "JSql: Format SQL"
+      },
+      {
+        "command": "jsqlSyntax.manageScopes",
+        "title": "JSql: Manage Schema Scopes"
       }
     ],
     "configuration": {
@@ -45,6 +49,26 @@
             "type": "string"
           },
           "description": "Workspace-relative glob patterns for Python model files such as tables.py. Parsed __tablename__ and sa.Column definitions are used to color known SQL tables and columns."
+        },
+        "jsqlSyntax.scopes": {
+          "type": "array",
+          "default": [],
+          "description": "Per-directory schema scopes. Each scope maps a path prefix to a set of table definition file globs. Files under the prefix will only see tables from that scope's files. Unscoped files fall back to tableDefinitionFiles.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "prefix": {
+                "type": "string",
+                "description": "Workspace-relative directory prefix, e.g. \"libservice1\""
+              },
+              "files": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Workspace-relative glob patterns for table definition files under this scope"
+              }
+            },
+            "required": ["prefix", "files"]
+          }
         },
         "jsqlSyntax.semanticWarnings": {
           "type": "boolean",

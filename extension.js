@@ -1953,7 +1953,8 @@ function activate(context) {
 
     const diagnostics = vscode.languages.createDiagnosticCollection('jsqlSyntax');
     context.subscriptions.push(diagnostics);
-    let schemaMetadata = createEmptySchemaMetadata();
+    let globalMetadata = createEmptySchemaMetadata();
+    let scopedMetadataMap = new Map(); // normalizedPrefix -> schemaMetadata
     let schemaRefreshVersion = 0;
     let schemaRefreshTimer = null;
 
@@ -1967,57 +1968,109 @@ function activate(context) {
             .filter(isWorkspaceRelativeGlobPattern);
     }
 
+    function getConfiguredScopes() {
+        const configured = cfg().get('scopes', []);
+        if (!Array.isArray(configured)) return [];
+        return configured.filter(s => s && typeof s.prefix === 'string' && Array.isArray(s.files));
+    }
+
     function semanticWarningsEnabled() {
         return cfg().get('semanticWarnings', true);
     }
 
-    async function refreshSchemaMetadata() {
-        const tableDefinitionFiles = getConfiguredTableDefinitionFiles();
-        const refreshVersion = ++schemaRefreshVersion;
-        const workspaceFolders = vscode.workspace.workspaceFolders || [];
-
-        if (!tableDefinitionFiles.length || !workspaceFolders.length || !vscode.workspace.findFiles || !vscode.workspace.fs || !vscode.RelativePattern) {
-            schemaMetadata = createEmptySchemaMetadata();
-            vscode.window.visibleTextEditors.forEach(applyDecorations);
-            return;
+    // Returns the schemaMetadata appropriate for the given document.
+    // Matches the document's workspace-relative path against configured scope prefixes,
+    // picking the most specific (longest) match. Falls back to globalMetadata.
+    function resolveMetadata(doc) {
+        if (!doc || !vscode.workspace.workspaceFolders) return globalMetadata;
+        const docFsPath = doc.uri.fsPath.replace(/\\/g, '/');
+        let best = null, bestLen = -1;
+        for (const wsFolder of vscode.workspace.workspaceFolders) {
+            const wsPath = wsFolder.uri.fsPath.replace(/\\/g, '/');
+            if (!docFsPath.startsWith(wsPath)) continue;
+            const relPath = docFsPath.slice(wsPath.length).replace(/^\//, '');
+            for (const [prefix, meta] of scopedMetadataMap) {
+                const normalizedPrefix = prefix.endsWith('/') ? prefix : prefix + '/';
+                if ((relPath + '/').startsWith(normalizedPrefix) && normalizedPrefix.length > bestLen) {
+                    bestLen = normalizedPrefix.length;
+                    best = meta;
+                }
+            }
         }
+        return best || globalMetadata;
+    }
 
-        const nextMetadata = createEmptySchemaMetadata();
-        const seenUris = new Set();
-
-        for (const pattern of tableDefinitionFiles) {
+    async function loadFilesIntoMetadata(patterns, workspaceFolders, target, seenUris) {
+        for (const pattern of patterns) {
             for (const workspaceFolder of workspaceFolders) {
                 let uris = [];
                 try {
                     uris = await vscode.workspace.findFiles(new vscode.RelativePattern(workspaceFolder, pattern));
                 } catch (err) {
-                    console.warn(`[jsqlSyntax] Failed to search for table definitions using "${pattern}" in workspace "${workspaceFolder.name}":`, err);
+                    console.warn(`[jsqlSyntax] Failed to search for table definitions using "${pattern}":`, err);
                     continue;
                 }
-
                 for (const uri of uris) {
                     const key = uri.toString();
                     if (seenUris.has(key)) continue;
                     seenUris.add(key);
-
                     try {
                         const bytes = await vscode.workspace.fs.readFile(uri);
                         const fileMetadata = parseTableDefinitionFile(Buffer.from(bytes).toString('utf8'));
                         fileMetadata.sourceUris.add(key);
-                        // Attach URI to every location so the definition provider can jump to the right file
                         for (const loc of fileMetadata.tableLocations.values()) loc.uri = key;
                         for (const colLocs of fileMetadata.columnLocations.values())
                             for (const loc of colLocs.values()) loc.uri = key;
-                        mergeSchemaMetadata(nextMetadata, fileMetadata);
+                        mergeSchemaMetadata(target, fileMetadata);
                     } catch (err) {
                         console.warn(`[jsqlSyntax] Failed to read table definition file "${key}":`, err);
                     }
                 }
             }
         }
+    }
+
+    async function refreshSchemaMetadata() {
+        const refreshVersion = ++schemaRefreshVersion;
+        const workspaceFolders = vscode.workspace.workspaceFolders || [];
+
+        if (!workspaceFolders.length || !vscode.workspace.findFiles || !vscode.workspace.fs || !vscode.RelativePattern) {
+            globalMetadata = createEmptySchemaMetadata();
+            scopedMetadataMap = new Map();
+            vscode.window.visibleTextEditors.forEach(applyDecorations);
+            return;
+        }
+
+        const seenUris = new Set();
+
+        // Load global (unscoped) files
+        const globalPatterns = getConfiguredTableDefinitionFiles();
+        const nextGlobal = createEmptySchemaMetadata();
+        if (globalPatterns.length) {
+            await loadFilesIntoMetadata(globalPatterns, workspaceFolders, nextGlobal, seenUris);
+        }
+
+        // Load scoped files — each scope gets its own isolated metadata
+        const configuredScopes = getConfiguredScopes();
+        const nextScopedMap = new Map();
+        for (const scope of configuredScopes) {
+            const prefix = scope.prefix.trim().replace(/\\/g, '/').replace(/\/$/, '');
+            if (!prefix) continue;
+            const validPatterns = scope.files
+                .filter(f => typeof f === 'string')
+                .map(f => f.trim())
+                .filter(Boolean)
+                .filter(isWorkspaceRelativeGlobPattern);
+            if (!validPatterns.length) continue;
+            const scopeMeta = createEmptySchemaMetadata();
+            const scopeSeenUris = new Set();
+            await loadFilesIntoMetadata(validPatterns, workspaceFolders, scopeMeta, scopeSeenUris);
+            nextScopedMap.set(prefix, scopeMeta);
+        }
 
         if (refreshVersion !== schemaRefreshVersion) return;
-        schemaMetadata = nextMetadata;
+        globalMetadata = nextGlobal;
+        scopedMetadataMap = nextScopedMap;
         vscode.window.visibleTextEditors.forEach(applyDecorations);
     }
 
@@ -2038,6 +2091,7 @@ function activate(context) {
     function applyDecorations(editor) {
         if (!editor || editor.document.languageId !== 'python') return;
         const doc = editor.document;
+        const schemaMetadata = resolveMetadata(doc);
         const text = doc.getText();
         const collected = Object.fromEntries(Object.keys(dec).map(k => [k, []]));
         const docDiagnostics = [];
@@ -2337,7 +2391,7 @@ function activate(context) {
             vscode.window.visibleTextEditors.forEach(applyDecorations);
         }
 
-        if (e.affectsConfiguration('jsqlSyntax.tableDefinitionFiles')) {
+        if (e.affectsConfiguration('jsqlSyntax.tableDefinitionFiles') || e.affectsConfiguration('jsqlSyntax.scopes')) {
             scheduleSchemaRefresh();
         }
 
@@ -2363,6 +2417,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerDefinitionProvider('python', {
             provideDefinition(doc, position) {
+                const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -2463,6 +2518,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerHoverProvider('python', {
             provideHover(doc, position) {
+                const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -2561,6 +2617,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerRenameProvider('python', {
             prepareRename(doc, position) {
+                const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -2590,6 +2647,7 @@ function activate(context) {
             },
 
             provideRenameEdits(doc, position, newName) {
+                const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -2623,6 +2681,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider('python', {
             provideCompletionItems(doc, position) {
+                const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
