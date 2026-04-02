@@ -6,7 +6,8 @@ const THEMES = {
         identifier: { color: '#A0ACBE' },     // brighter blue-gray — readable, not blackish
         table: { color: '#F4C56E' },           // warm gold
         column: { color: '#82B1FF' },          // periwinkle blue
-        alias: { color: '#5DE3C0' },           // bright mint — "a name you gave it"
+        alias: { color: '#5DE3C0' },           // bright mint — table alias
+        col_alias: { color: '#D4AAFF' },       // soft lavender — column/output alias
         keyword: { color: '#6BB8C8', fontWeight: 'bold' },
         function: { color: '#FF79C6' },
         param: { color: '#FFB86C' },
@@ -22,7 +23,8 @@ const THEMES = {
         identifier: { color: '#B0B8C8' },      // brighter neutral
         table: { color: '#E07850' },            // terracotta
         column: { color: '#7EC8E3' },           // sky blue
-        alias: { color: '#5BCFB5' },            // teal mint
+        alias: { color: '#5BCFB5' },            // teal mint — table alias
+        col_alias: { color: '#C9A0DC' },        // mauve — column/output alias
         keyword: { color: '#F92672', fontWeight: 'bold' },
         function: { color: '#A6E22E' },
         param: { color: '#FD971F' },
@@ -38,7 +40,8 @@ const THEMES = {
         identifier: { color: '#9DA5B4' },       // brighter neutral
         table: { color: '#4EC9B0' },            // VS Code teal
         column: { color: '#7ECAE9' },           // light cornflower
-        alias: { color: '#56D6AE' },            // softer mint teal
+        alias: { color: '#56D6AE' },            // softer mint teal — table alias
+        col_alias: { color: '#C0A0E8' },        // lavender — column/output alias
         keyword: { color: '#C678DD', fontWeight: 'bold' },
         function: { color: '#61AFEF' },
         param: { color: '#D19A66' },
@@ -730,7 +733,7 @@ function stripComment(line) {
 function lineLooksLikeColumnStart(text) {
     if (!text) return false;
     if (CLAUSE_START_RE.test(text) || NON_COLUMN_CONTINUATION_RE.test(text)) return false;
-    return /^[A-Za-z_("*`['0-9]/i.test(text);
+    return /^[A-Za-z_("*`['"0-9]/i.test(text);
 }
 
 function lineEndsLikeColumnContinuation(text) {
@@ -866,19 +869,24 @@ function detectDuplicateAliases(sql) {
         if (splitAtFrom(trimmed)) { inSelect = false; continue; }
 
         const lineStart = lineOffset + rawLine.indexOf(trimmed);
-        const asRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
-        let m;
-        while ((m = asRe.exec(trimmed)) !== null) {
-            const alias = m[1];
-            if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
-            const start = lineStart + m.index + m[0].length - alias.length;
-            const end = start + alias.length;
-            if (rangeOverlapsOpaque(opaque, start, end)) continue;
-            const key = alias.toLowerCase();
-            if (selectAliases.has(key)) {
-                diagnostics.push({ start, end, message: `Duplicate alias "${alias}" in SELECT.` });
-            } else {
-                selectAliases.set(key, { start, end });
+        const aliasPatterns = [
+            /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi,
+            /(?:\)|'|\b\d+(?:\.\d+)?|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|$))/gm,
+        ];
+        for (const re of aliasPatterns) {
+            let m;
+            while ((m = re.exec(trimmed)) !== null) {
+                const alias = m[1];
+                if (!alias || ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+                const start = lineStart + m.index + m[0].length - alias.length;
+                const end = start + alias.length;
+                if (rangeOverlapsOpaque(opaque, start, end)) continue;
+                const key = alias.toLowerCase();
+                if (selectAliases.has(key)) {
+                    diagnostics.push({ start, end, message: `Duplicate alias "${alias}" in SELECT.` });
+                } else {
+                    selectAliases.set(key, { start, end });
+                }
             }
         }
     }
@@ -1550,8 +1558,25 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
-    // Explicit AS aliases — covers both column aliases (SELECT expr AS alias)
-    // and table aliases (FROM table AS t)
+    // Table aliases — FROM/JOIN table (AS)? alias — run first so AS-qualified
+    // table aliases are occupied before the column alias pass.
+    const colAliasRanges = [];
+    const seenColAliases = new Set();
+    const tableAliasRe = /\b(?:FROM|JOIN|UPDATE|INTO)\s+[A-Za-z_][A-Za-z0-9_.]*\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = tableAliasRe.exec(sql)) !== null) {
+        const alias = match[1];
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        const start = match.index + match[0].length - alias.length;
+        const end = start + alias.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        let overlaps = false;
+        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+        if (overlaps) continue;
+        addUniqueRange(aliasRanges, seenAliases, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
+    // Column aliases — remaining AS aliases (table aliases already occupied above)
     const asAliasRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
     while ((match = asAliasRe.exec(sql)) !== null) {
         const alias = match[1];
@@ -1562,22 +1587,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         let overlaps = false;
         for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
         if (overlaps) continue;
-        addUniqueRange(aliasRanges, seenAliases, start, end);
-        for (let i = start; i < end; i++) occupied.add(i);
-    }
-
-    // Implicit table aliases — FROM/JOIN table alias (no AS keyword)
-    const implicitAliasRe = /\b(?:FROM|JOIN|UPDATE|INTO)\s+[A-Za-z_][A-Za-z0-9_.]*\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
-    while ((match = implicitAliasRe.exec(sql)) !== null) {
-        const alias = match[1];
-        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
-        const start = match.index + match[0].length - alias.length;
-        const end = start + alias.length;
-        if (rangeOverlapsOpaque(opaque, start, end)) continue;
-        let overlaps = false;
-        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
-        if (overlaps) continue;
-        addUniqueRange(aliasRanges, seenAliases, start, end);
+        addUniqueRange(colAliasRanges, seenColAliases, start, end);
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
@@ -1586,9 +1596,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     //   2. after qualified column:   u.name full_name,
     //   3. after string literal:     'active' status,
     //   4. after number literal:     1 row_num,   42 id,
-    // All require the alias to be immediately before a comma or end of line
-    // to avoid false positives in WHERE/ON conditions.
-    const implicitColAliasRe = /(?:\)|'|\b\d+(?:\.\d+)?|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|\b(?:FROM|WHERE|HAVING|GROUP|ORDER|LIMIT|UNION|INTERSECT|EXCEPT)\b|$))/gm;
+    const implicitColAliasRe = /(?:\)|['"]|\b\d+(?:\.\d+)?|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|\b(?:FROM|WHERE|HAVING|GROUP|ORDER|LIMIT|UNION|INTERSECT|EXCEPT)\b|$))/gm;
     while ((match = implicitColAliasRe.exec(sql)) !== null) {
         const alias = match[1];
         if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
@@ -1598,7 +1606,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         let overlaps = false;
         for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
         if (overlaps) continue;
-        addUniqueRange(aliasRanges, seenAliases, start, end);
+        addUniqueRange(colAliasRanges, seenColAliases, start, end);
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
@@ -1633,14 +1641,14 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
-    // Alias usages — tag every `alias.something` qualifier with alias color
-    const aliasNames = new Set(
+    // Table alias usages — tag every `alias.something` qualifier with table alias color
+    const tableAliasNames = new Set(
         aliasRanges.map(r => sql.slice(r.start, r.end).toLowerCase())
     );
-    if (aliasNames.size > 0) {
+    if (tableAliasNames.size > 0) {
         const aliasUsageRe = /\b([A-Za-z_][A-Za-z0-9_]*)(?=\.)/g;
         while ((match = aliasUsageRe.exec(sql)) !== null) {
-            if (!aliasNames.has(match[1].toLowerCase())) continue;
+            if (!tableAliasNames.has(match[1].toLowerCase())) continue;
             const start = match.index;
             const end = start + match[1].length;
             if (rangeOverlapsOpaque(opaque, start, end)) continue;
@@ -1652,7 +1660,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
-    return { tableRanges, columnRanges, aliasRanges };
+    return { tableRanges, columnRanges, aliasRanges, colAliasRanges };
 }
 
 function buildDecorations(themeName) {
@@ -1833,6 +1841,21 @@ function activate(context) {
 
                 const absStart = start + relStart;
                 collected.alias.push(new vscode.Range(
+                    doc.positionAt(absStart),
+                    doc.positionAt(absStart + (relEnd - relStart))
+                ));
+                for (let i = relStart; i < relEnd; i++) occupied.add(i);
+            }
+
+            for (const { start: relStart, end: relEnd } of semanticRanges.colAliasRanges) {
+                let overlaps = false;
+                for (let i = relStart; i < relEnd; i++) {
+                    if (occupied.has(i)) { overlaps = true; break; }
+                }
+                if (overlaps) continue;
+
+                const absStart = start + relStart;
+                collected.col_alias.push(new vscode.Range(
                     doc.positionAt(absStart),
                     doc.positionAt(absStart + (relEnd - relStart))
                 ));
