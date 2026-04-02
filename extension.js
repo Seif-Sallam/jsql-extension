@@ -58,7 +58,7 @@ const ALL_SQL_KEYWORDS = new Set([
     'DATE', 'DATE_FORMAT', 'DATE_ADD', 'DATE_SUB', 'DATEDIFF', 'NOW', 'CURDATE', 'CAST', 'CONVERT',
     'GROUP_CONCAT', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LEAD', 'LAG', 'FIRST_VALUE', 'LAST_VALUE',
     'ROUND', 'FLOOR', 'CEIL', 'CEILING', 'ABS', 'MOD', 'POWER', 'GREATEST', 'LEAST', 'TIMESTAMPDIFF', 'EXTRACT',
-    'JSON_EXTRACT', 'JSON_UNQUOTE',
+    'JSON', 'JSON_EXTRACT', 'JSON_UNQUOTE',
 ]);
 
 function levenshtein(a, b) {
@@ -132,6 +132,11 @@ function expandCaseBlocks(sql, baseIndent) {
     while (i < sql.length) {
         if (matchKeyword(sql, i, 'CASE')) {
             const { content, afterEnd } = extractCaseContent(sql, i + 4);
+            if (/\(\s*(SELECT|WITH)\b/i.test(content)) {
+                result += 'CASE' + content + 'END';
+                i = afterEnd;
+                continue;
+            }
             const innerIndent = baseIndent + '    ';
             const parts = splitCaseContent(content);
             const formatted = parts.map(p => innerIndent + p.type + ' ' + expandCaseBlocks(p.text, innerIndent)).join('\n');
@@ -142,6 +147,20 @@ function expandCaseBlocks(sql, baseIndent) {
         }
     }
     return result;
+}
+
+function formatInlineCaseExpressions(sql) {
+    return sql.split('\n').flatMap(line => {
+        const lineIndent = line.match(/^([ \t]*)/)[1];
+        const body = line.slice(lineIndent.length);
+        if (!/\bCASE\b[\s\S]*\bEND\b/i.test(body)) return [line];
+        if (/\(\s*(SELECT|WITH)\b/i.test(body)) return [line];
+
+        const expanded = expandCaseBlocks(body, lineIndent);
+        const parts = expanded.split('\n');
+        parts[0] = lineIndent + parts[0];
+        return parts;
+    }).join('\n');
 }
 
 function formatCTEBlocks(sql) {
@@ -281,7 +300,7 @@ function splitUnionLineForFollowingComment(line) {
             comment: match[2].trimStart(),
         };
     }
-    return splitTrailingInlineComment(line);
+    return null;
 }
 
 function normalizeStringQuotes(str) {
@@ -414,6 +433,56 @@ function normalizeJinjaControlIndentation(sql) {
     }).join('\n');
 }
 
+function dedentLines(lines) {
+    const indents = lines
+        .filter(line => line.trim())
+        .map(line => (line.match(/^([ \t]*)/) || ['', ''])[1].length);
+    const minIndent = indents.length ? Math.min(...indents) : 0;
+    return lines.map(line => line.trim() ? line.slice(minIndent) : '');
+}
+
+function findParenthesizedSubqueries(sql) {
+    const ranges = [];
+    const opaque = buildOpaqueMask(sql);
+
+    for (let i = 0; i < sql.length; i++) {
+        if (opaque[i] || sql[i] !== '(') continue;
+        if (!/^\s*(SELECT|WITH)\b/i.test(sql.slice(i + 1))) continue;
+
+        let depth = 1;
+        for (let j = i + 1; j < sql.length; j++) {
+            if (opaque[j]) continue;
+            if (sql[j] === '(') depth++;
+            else if (sql[j] === ')') depth--;
+            if (depth === 0) {
+                ranges.push({ start: i, end: j });
+                i = j;
+                break;
+            }
+        }
+    }
+
+    return ranges;
+}
+
+function formatParenthesizedSubqueries(sql) {
+    let result = sql;
+    const ranges = findParenthesizedSubqueries(sql);
+
+    for (let i = ranges.length - 1; i >= 0; i--) {
+        const { start, end } = ranges[i];
+        const lineStart = result.lastIndexOf('\n', start) + 1;
+        const baseIndent = (result.slice(lineStart, start).match(/^([ \t]*)/) || ['', ''])[1];
+        const innerIndent = baseIndent + '    ';
+        const inner = result.slice(start + 1, end).trim();
+        const dedented = dedentLines(inner.split('\n').map(line => line.trimEnd()));
+        const replacement = '(\n' + dedented.map(line => line ? innerIndent + line : '').join('\n') + '\n' + baseIndent + ')';
+        result = result.slice(0, start) + replacement + result.slice(end + 1);
+    }
+
+    return result;
+}
+
 function splitWhereHavingConditions(sql) {
     return sql.split('\n').flatMap(line => {
         const lineIndent = line.match(/^([ \t]*)/)[1];
@@ -460,7 +529,7 @@ function formatSQL(sql) {
     s = s.replace(/\s+/g, ' ').trim();
 
     // Uppercase keywords
-    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER)\b/gi, m => m.toUpperCase());
+    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|JSON)\b/gi, m => m.toUpperCase());
 
     // Break before top-level clauses — longer phrases first to avoid partial matches
     s = s.replace(
@@ -501,14 +570,8 @@ function formatSQL(sql) {
     // Expand bracketed conditions with 3+ sub-conditions (AND/OR inside parens are still single-line)
     s = expandBracketedConditions(lines.join('\n'));
 
-    // Expand CASE blocks per line (recursive, handles nesting)
-    s = s.split('\n').flatMap(line => {
-        const lineIndent = line.match(/^([ \t]*)/)[1];
-        const expanded = expandCaseBlocks(line.slice(lineIndent.length), lineIndent);
-        const parts = expanded.split('\n');
-        parts[0] = lineIndent + parts[0];
-        return parts;
-    }).join('\n');
+    // Expand inline CASE expressions, but leave multiline/subquery CASE blocks intact.
+    s = formatInlineCaseExpressions(s);
 
     // Indent CTE bodies (WITH name AS (...) → body indented one level)
     s = formatCTEBlocks(s);
@@ -519,6 +582,7 @@ function formatSQL(sql) {
     s = splitWhereHavingConditions(s);
     s = expandBracketedConditions(s);
     s = normalizeJinjaControlIndentation(s);
+    s = formatParenthesizedSubqueries(s);
 
     // Empty line around UNION / UNION ALL / INTERSECT / EXCEPT
     // Use pre-scanned adjacency info (comment positions are lost after whitespace collapse)
@@ -575,7 +639,7 @@ const SPECIFIC_PATTERNS = [
     { re: /:[a-zA-Z_][a-zA-Z0-9_]*/g, key: 'param' },
     { re: /\b(TRUE|FALSE)\b/gi, key: 'boolean' },
     {
-        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH)\b/gi,
+        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON)\b/gi,
         key: 'keyword'
     },
     {
@@ -605,7 +669,7 @@ function lineLooksLikeColumnStart(text) {
 }
 
 function lineEndsLikeColumnContinuation(text) {
-    return /(?:[,([]|->>|->|\+|-|\*|\/|%|=|<|>|<>|!=|<=|>=|AND|OR|WHEN|THEN|ELSE|CASE)$/i.test(text);
+    return /(?:[,([]|->>|->|\+|-|\*|\/|%|=|<|>|<>|!=|<=|>=|AND|OR|WHEN|THEN|ELSE|CASE|SELECT(?:\s+DISTINCT)?)$/i.test(text);
 }
 
 function splitAtFrom(text) {
@@ -798,6 +862,9 @@ function findSQLRanges(text) {
     let m;
     while ((m = TRIPLE.exec(text)) !== null) {
         const quote = m[1];
+        const lineStart = text.lastIndexOf('\n', m.index - 1) + 1;
+        const beforeQuote = text.slice(lineStart, m.index);
+        if (!beforeQuote.trim()) continue;
         const start = m.index + quote.length;
         const end = text.indexOf(quote, start);
         if (end !== -1 && SQL_START.test(text.slice(start, end))) {
