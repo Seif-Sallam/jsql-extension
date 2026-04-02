@@ -37,6 +37,14 @@
             "One Dark — purple keywords, blue functions, green strings"
           ],
           "description": "Color theme for JSql syntax highlighting"
+        },
+        "jsqlSyntax.tableDefinitionFiles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace-relative glob patterns for Python model files such as tables.py. Parsed __tablename__ and sa.Column definitions are used to color known SQL tables and columns."
         }
       }
     }

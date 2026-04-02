@@ -8,6 +8,7 @@ SQL + Jinja2 highlighting, formatting, and keyword diagnostics for **JSql-style 
 
 - **Highlights SQL inside Python triple-quoted strings** (`'''...'''` / `"""..."""`) when the content looks like SQL (e.g., starts with `SELECT`, `WITH`, `INSERT`, etc.).
 - **Highlights Jinja2** inside those SQL blocks (`{# ... #}`, `{% ... %}`, `{{ ... }}`).
+- **Colors tables, columns, and generic identifiers separately**, with optional schema metadata loaded from your model files.
 - **Warns on likely-misspelled ALL-CAPS SQL keywords**, with a “did you mean …?” suggestion.
 - **Formats SQL in-place** (uppercase keywords, splits clauses to lines, expands long `SELECT` lists, formats `CASE` blocks, and more).
 - **Includes a small set of highlight themes** you can switch between.
@@ -88,12 +89,17 @@ Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) and run:
 ### Configuration
 
 - **`jsqlSyntax.theme`**: `"dracula" | "monokai" | "one-dark"` (default: `"dracula"`)
+- **`jsqlSyntax.tableDefinitionFiles`**: array of workspace-relative glob patterns for Python model files such as `tables.py`. The extension parses `__tablename__` and `sa.Column(...)` definitions and uses them to color known SQL tables and columns.
 
 You can set it in Settings UI or in `settings.json`:
 
 ```json
 {
-  "jsqlSyntax.theme": "one-dark"
+  "jsqlSyntax.theme": "one-dark",
+  "jsqlSyntax.tableDefinitionFiles": [
+    "**/tables.py",
+    "**/models/*.py"
+  ]
 }
 ```
 

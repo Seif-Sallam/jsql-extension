@@ -3,7 +3,18 @@
 const assert = require('assert');
 const { loadExtensionInternals } = require('./load-formatter');
 
-const { formatSQL, findSQLRanges, buildFormattedSQLBlock, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets } = loadExtensionInternals();
+const {
+    formatSQL,
+    findSQLRanges,
+    buildFormattedSQLBlock,
+    createEmptySchemaMetadata,
+    mergeSchemaMetadata,
+    parseTableDefinitionFile,
+    findSemanticEntityRanges,
+    detectMissingSelectCommas,
+    findMatchingBracket,
+    findUnmatchedBrackets
+} = loadExtensionInternals();
 
 const formatCases = [
     {
@@ -266,6 +277,64 @@ const blockFormatCases = [
             '    SELECT "active" AS status',
             "    FROM users'''",
         ].join('\n'),
+    },
+];
+
+const schemaMetadataCases = [
+    {
+        name: 'parses table names and sqlalchemy columns from model files',
+        input: [
+            'class UserTaskStep(Model):',
+            "    __tablename__ = 'user_task_step'",
+            '    id_user_task_step = sa.Column(INT, primary_key=True)',
+            '    id_user_task = sa.Column(INT, nullable=False)',
+            '    id_task_step_type = sa.Column(INT, nullable=False)',
+            '    order_ix = sa.Column(INT, nullable=False)',
+            "    id_status = sa.Column(SMALLINT, nullable=False, server_default='1')",
+            '    response = sa.Column(types.JSON, nullable=True)',
+            "    created_at = sa.Column(types.TIMESTAMP, server_default=text('CURRENT_TIMESTAMP'), nullable=False)",
+            '    tasks = relationship("Task")',
+        ].join('\n'),
+        expectedTables: ['user_task_step'],
+        expectedColumns: ['created_at', 'id_status', 'id_task_step_type', 'id_user_task', 'id_user_task_step', 'order_ix', 'response'],
+    },
+];
+
+const semanticHighlightCases = [
+    {
+        name: 'highlights heuristic table references even without loaded metadata',
+        input: [
+            'SELECT a.id_user, u.email',
+            'FROM account a',
+            'JOIN user u ON u.id_user = a.id_user',
+        ].join('\n'),
+        metadata: createEmptySchemaMetadata(),
+        expectedTables: ['account', 'user'],
+        expectedColumns: [],
+    },
+    {
+        name: 'highlights loaded table and column names separately',
+        metadataFiles: [[
+            'class UserTaskStep(Model):',
+            "    __tablename__ = 'user_task_step'",
+            '    id_user_task_step = sa.Column(INT, primary_key=True)',
+            '    id_user_task = sa.Column(INT, nullable=False)',
+            '    response = sa.Column(types.JSON, nullable=True)',
+            '    id_status = sa.Column(SMALLINT, nullable=False)',
+        ].join('\n'), [
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+            '    name = sa.Column(VARCHAR(255), nullable=False)',
+        ].join('\n')],
+        input: [
+            'SELECT uts.id_user_task_step, uts.response, ut.name',
+            'FROM user_task_step uts',
+            'JOIN user_task ut ON ut.id_user_task = uts.id_user_task',
+            'WHERE uts.id_status = 1',
+        ].join('\n'),
+        expectedTables: ['user_task', 'user_task_step'],
+        expectedColumns: ['id_status', 'id_user_task', 'id_user_task_step', 'name', 'response'],
     },
 ];
 
@@ -595,6 +664,48 @@ function runBlockFormatCases() {
     }
 }
 
+function runSchemaMetadataCases() {
+    for (const testCase of schemaMetadataCases) {
+        const metadata = parseTableDefinitionFile(testCase.input);
+        assert.strictEqual(
+            JSON.stringify(Array.from(metadata.tables).sort()),
+            JSON.stringify(testCase.expectedTables),
+            `parseTableDefinitionFile tables failed: ${testCase.name}`
+        );
+        assert.strictEqual(
+            JSON.stringify(Array.from(metadata.columns).sort()),
+            JSON.stringify(testCase.expectedColumns),
+            `parseTableDefinitionFile columns failed: ${testCase.name}`
+        );
+    }
+}
+
+function runSemanticHighlightCases() {
+    for (const testCase of semanticHighlightCases) {
+        const metadata = testCase.metadataFiles
+            ? testCase.metadataFiles.reduce((acc, fileText) => {
+                mergeSchemaMetadata(acc, parseTableDefinitionFile(fileText));
+                return acc;
+            }, createEmptySchemaMetadata())
+            : testCase.metadata;
+
+        const semanticRanges = findSemanticEntityRanges(testCase.input, metadata);
+        const tables = Array.from(new Set(semanticRanges.tableRanges.map(range => testCase.input.slice(range.start, range.end)))).sort();
+        const columns = Array.from(new Set(semanticRanges.columnRanges.map(range => testCase.input.slice(range.start, range.end)))).sort();
+
+        assert.strictEqual(
+            JSON.stringify(tables),
+            JSON.stringify(testCase.expectedTables),
+            `findSemanticEntityRanges tables failed: ${testCase.name}`
+        );
+        assert.strictEqual(
+            JSON.stringify(columns),
+            JSON.stringify(testCase.expectedColumns),
+            `findSemanticEntityRanges columns failed: ${testCase.name}`
+        );
+    }
+}
+
 function runCommaWarningCases() {
     for (const testCase of commaWarningCases) {
         assert.strictEqual(
@@ -629,10 +740,12 @@ function main() {
     runFormatCases();
     runRangeCases();
     runBlockFormatCases();
+    runSchemaMetadataCases();
+    runSemanticHighlightCases();
     runCommaWarningCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + commaWarningCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + commaWarningCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

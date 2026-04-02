@@ -3,7 +3,9 @@ const vscode = require('vscode');
 
 const THEMES = {
     dracula: {
-        identifier: { color: '#B0B8C1' },
+        identifier: { color: '#8B949E' },
+        table: { color: '#FFB86C' },
+        column: { color: '#E6EDF3' },
         keyword: { color: '#6BB8C8', fontWeight: 'bold' },
         function: { color: '#FF79C6' },
         param: { color: '#FFB86C' },
@@ -16,7 +18,9 @@ const THEMES = {
         boolean: { color: '#FF8585', fontWeight: 'bold' },
     },
     monokai: {
-        identifier: { color: '#F8F8F2' },
+        identifier: { color: '#A6ACB9' },
+        table: { color: '#66D9EF' },
+        column: { color: '#FFF4D6' },
         keyword: { color: '#F92672', fontWeight: 'bold' },
         function: { color: '#A6E22E' },
         param: { color: '#FD971F' },
@@ -29,7 +33,9 @@ const THEMES = {
         boolean: { color: '#66D9E8', fontWeight: 'bold' },
     },
     'one-dark': {
-        identifier: { color: '#ABB2BF' },
+        identifier: { color: '#7F848E' },
+        table: { color: '#E5C07B' },
+        column: { color: '#D7DAE0' },
         keyword: { color: '#C678DD', fontWeight: 'bold' },
         function: { color: '#61AFEF' },
         param: { color: '#D19A66' },
@@ -1080,6 +1086,140 @@ function buildFormattedSQLBlock(text, sqlRange) {
     };
 }
 
+function createEmptySchemaMetadata() {
+    return {
+        tables: new Set(),
+        columns: new Set(),
+        tableColumns: new Map(),
+        sourceUris: new Set(),
+    };
+}
+
+function mergeSchemaMetadata(target, source) {
+    for (const tableName of source.tables) {
+        target.tables.add(tableName);
+    }
+
+    for (const columnName of source.columns) {
+        target.columns.add(columnName);
+    }
+
+    for (const [tableName, columns] of source.tableColumns.entries()) {
+        let tableColumns = target.tableColumns.get(tableName);
+        if (!tableColumns) {
+            tableColumns = new Set();
+            target.tableColumns.set(tableName, tableColumns);
+        }
+        for (const columnName of columns) {
+            tableColumns.add(columnName);
+        }
+    }
+
+    for (const sourceUri of source.sourceUris) {
+        target.sourceUris.add(sourceUri);
+    }
+}
+
+function parseTableDefinitionFile(text) {
+    const metadata = createEmptySchemaMetadata();
+    const classRe = /^class\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*:\s*$/gm;
+    const classStarts = [];
+    let match;
+
+    while ((match = classRe.exec(text)) !== null) {
+        classStarts.push(match.index);
+    }
+
+    for (let i = 0; i < classStarts.length; i++) {
+        const blockStart = classStarts[i];
+        const blockEnd = i + 1 < classStarts.length ? classStarts[i + 1] : text.length;
+        const block = text.slice(blockStart, blockEnd);
+        const tableNameMatch = /^\s*__tablename__\s*=\s*(['"])([^'"]+)\1/m.exec(block);
+        if (!tableNameMatch) continue;
+
+        const tableName = tableNameMatch[2].toLowerCase();
+        const columns = new Set();
+        const columnRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:[\w.]+\.)?(?:Column|mapped_column)\s*\(/gm;
+        let columnMatch;
+        while ((columnMatch = columnRe.exec(block)) !== null) {
+            columns.add(columnMatch[1].toLowerCase());
+            metadata.columns.add(columnMatch[1].toLowerCase());
+        }
+
+        metadata.tables.add(tableName);
+        metadata.tableColumns.set(tableName, columns);
+    }
+
+    return metadata;
+}
+
+function rangeOverlapsOpaque(opaque, start, end) {
+    for (let i = start; i < end; i++) {
+        if (opaque[i]) return true;
+    }
+    return false;
+}
+
+function addUniqueRange(ranges, seen, start, end) {
+    const key = `${start}:${end}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    ranges.push({ start, end });
+}
+
+function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadata()) {
+    const opaque = buildOpaqueMask(sql);
+    const tableRanges = [];
+    const columnRanges = [];
+    const seenTables = new Set();
+    const seenColumns = new Set();
+    const occupied = new Set();
+    const tableRefRe = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/gi;
+    let match;
+
+    while ((match = tableRefRe.exec(sql)) !== null) {
+        const start = match.index + match[0].length - match[1].length;
+        const end = start + match[1].length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+
+        addUniqueRange(tableRanges, seenTables, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
+    const identRe = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
+    while ((match = identRe.exec(sql)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        const name = match[0];
+        const normalized = name.toLowerCase();
+
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        if (ALL_SQL_KEYWORDS.has(name.toUpperCase())) continue;
+
+        let overlapsExisting = false;
+        for (let i = start; i < end; i++) {
+            if (occupied.has(i)) {
+                overlapsExisting = true;
+                break;
+            }
+        }
+        if (overlapsExisting) continue;
+
+        if (schemaMetadata.tables.has(normalized)) {
+            addUniqueRange(tableRanges, seenTables, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+            continue;
+        }
+
+        if (schemaMetadata.columns.has(normalized)) {
+            addUniqueRange(columnRanges, seenColumns, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+        }
+    }
+
+    return { tableRanges, columnRanges };
+}
+
 function buildDecorations(themeName) {
     const colors = THEMES[themeName] || THEMES['dracula'];
     return Object.fromEntries(
@@ -1109,6 +1249,75 @@ function activate(context) {
 
     const diagnostics = vscode.languages.createDiagnosticCollection('jsqlSyntax');
     context.subscriptions.push(diagnostics);
+    let schemaMetadata = createEmptySchemaMetadata();
+    let schemaRefreshVersion = 0;
+    let schemaRefreshTimer = null;
+
+    function getConfiguredTableDefinitionFiles() {
+        const configured = cfg().get('tableDefinitionFiles', []);
+        if (!Array.isArray(configured)) return [];
+        return configured
+            .filter(pattern => typeof pattern === 'string')
+            .map(pattern => pattern.trim())
+            .filter(Boolean);
+    }
+
+    async function refreshSchemaMetadata() {
+        const tableDefinitionFiles = getConfiguredTableDefinitionFiles();
+        const refreshVersion = ++schemaRefreshVersion;
+
+        if (!tableDefinitionFiles.length || !vscode.workspace.findFiles || !vscode.workspace.fs) {
+            schemaMetadata = createEmptySchemaMetadata();
+            vscode.window.visibleTextEditors.forEach(applyDecorations);
+            return;
+        }
+
+        const nextMetadata = createEmptySchemaMetadata();
+        const seenUris = new Set();
+
+        for (const pattern of tableDefinitionFiles) {
+            let uris = [];
+            try {
+                uris = await vscode.workspace.findFiles(pattern);
+            } catch (err) {
+                console.warn(`[jsqlSyntax] Failed to search for table definitions using "${pattern}":`, err);
+                continue;
+            }
+
+            for (const uri of uris) {
+                const key = uri.toString();
+                if (seenUris.has(key)) continue;
+                seenUris.add(key);
+
+                try {
+                    const bytes = await vscode.workspace.fs.readFile(uri);
+                    const fileMetadata = parseTableDefinitionFile(Buffer.from(bytes).toString('utf8'));
+                    fileMetadata.sourceUris.add(key);
+                    mergeSchemaMetadata(nextMetadata, fileMetadata);
+                } catch (err) {
+                    console.warn(`[jsqlSyntax] Failed to read table definition file "${key}":`, err);
+                }
+            }
+        }
+
+        if (refreshVersion !== schemaRefreshVersion) return;
+        schemaMetadata = nextMetadata;
+        vscode.window.visibleTextEditors.forEach(applyDecorations);
+    }
+
+    function scheduleSchemaRefresh() {
+        if (schemaRefreshTimer) clearTimeout(schemaRefreshTimer);
+        schemaRefreshTimer = setTimeout(() => {
+            schemaRefreshTimer = null;
+            refreshSchemaMetadata();
+        }, 100);
+    }
+
+    context.subscriptions.push({
+        dispose() {
+            if (schemaRefreshTimer) clearTimeout(schemaRefreshTimer);
+        }
+    });
 
     function applyDecorations(editor) {
         if (!editor || editor.document.languageId !== 'python') return;
@@ -1139,6 +1348,37 @@ function activate(context) {
                     collected[key].push(new vscode.Range(doc.positionAt(absStart), doc.positionAt(absEnd)));
                     for (let i = m.index; i < m.index + m[0].length; i++) occupied.add(i);
                 }
+            }
+
+            const semanticRanges = findSemanticEntityRanges(content, schemaMetadata);
+            for (const { start: relStart, end: relEnd } of semanticRanges.tableRanges) {
+                let overlaps = false;
+                for (let i = relStart; i < relEnd; i++) {
+                    if (occupied.has(i)) { overlaps = true; break; }
+                }
+                if (overlaps) continue;
+
+                const absStart = start + relStart;
+                collected.table.push(new vscode.Range(
+                    doc.positionAt(absStart),
+                    doc.positionAt(absStart + (relEnd - relStart))
+                ));
+                for (let i = relStart; i < relEnd; i++) occupied.add(i);
+            }
+
+            for (const { start: relStart, end: relEnd } of semanticRanges.columnRanges) {
+                let overlaps = false;
+                for (let i = relStart; i < relEnd; i++) {
+                    if (occupied.has(i)) { overlaps = true; break; }
+                }
+                if (overlaps) continue;
+
+                const absStart = start + relStart;
+                collected.column.push(new vscode.Range(
+                    doc.positionAt(absStart),
+                    doc.positionAt(absStart + (relEnd - relStart))
+                ));
+                for (let i = relStart; i < relEnd; i++) occupied.add(i);
             }
 
             IDENT_RE.lastIndex = 0;
@@ -1295,28 +1535,33 @@ function activate(context) {
     }, null, context.subscriptions);
 
     vscode.workspace.onDidChangeConfiguration(e => {
-        if (!e.affectsConfiguration('jsqlSyntax.theme')) return;
-        Object.values(dec).forEach(d => d.dispose());
-        dec = buildDecorations(cfg().get('theme', 'dracula'));
-        bracketDec.dispose();
-        bracketErrorDec.dispose();
-        bracketDec = vscode.window.createTextEditorDecorationType({
-            border: '1px solid',
-            borderColor: new vscode.ThemeColor('editorBracketMatch.border'),
-            backgroundColor: new vscode.ThemeColor('editorBracketMatch.background'),
-            borderRadius: '2px',
-            overviewRulerColor: new vscode.ThemeColor('editorBracketMatch.border'),
-            overviewRulerLane: vscode.OverviewRulerLane.Right,
-        });
-        bracketErrorDec = vscode.window.createTextEditorDecorationType({
-            border: '1px solid',
-            borderColor: new vscode.ThemeColor('editorError.foreground'),
-            backgroundColor: 'rgba(255, 0, 0, 0.18)',
-            borderRadius: '2px',
-            overviewRulerColor: new vscode.ThemeColor('editorError.foreground'),
-            overviewRulerLane: vscode.OverviewRulerLane.Right,
-        });
-        vscode.window.visibleTextEditors.forEach(applyDecorations);
+        if (e.affectsConfiguration('jsqlSyntax.theme')) {
+            Object.values(dec).forEach(d => d.dispose());
+            dec = buildDecorations(cfg().get('theme', 'dracula'));
+            bracketDec.dispose();
+            bracketErrorDec.dispose();
+            bracketDec = vscode.window.createTextEditorDecorationType({
+                border: '1px solid',
+                borderColor: new vscode.ThemeColor('editorBracketMatch.border'),
+                backgroundColor: new vscode.ThemeColor('editorBracketMatch.background'),
+                borderRadius: '2px',
+                overviewRulerColor: new vscode.ThemeColor('editorBracketMatch.border'),
+                overviewRulerLane: vscode.OverviewRulerLane.Right,
+            });
+            bracketErrorDec = vscode.window.createTextEditorDecorationType({
+                border: '1px solid',
+                borderColor: new vscode.ThemeColor('editorError.foreground'),
+                backgroundColor: 'rgba(255, 0, 0, 0.18)',
+                borderRadius: '2px',
+                overviewRulerColor: new vscode.ThemeColor('editorError.foreground'),
+                overviewRulerLane: vscode.OverviewRulerLane.Right,
+            });
+            vscode.window.visibleTextEditors.forEach(applyDecorations);
+        }
+
+        if (e.affectsConfiguration('jsqlSyntax.tableDefinitionFiles')) {
+            scheduleSchemaRefresh();
+        }
     }, null, context.subscriptions);
 
     vscode.window.onDidChangeActiveTextEditor(applyDecorations, null, context.subscriptions);
@@ -1327,10 +1572,16 @@ function activate(context) {
         const editor = vscode.window.visibleTextEditors.find(e => e.document === document);
         if (editor) applyDecorations(editor);
     }, null, context.subscriptions);
+    vscode.workspace.onDidSaveTextDocument(document => {
+        if (document.languageId !== 'python') return;
+        if (!getConfiguredTableDefinitionFiles().length) return;
+        scheduleSchemaRefresh();
+    }, null, context.subscriptions);
 
     context.subscriptions.push(bracketDec);
     context.subscriptions.push(bracketErrorDec);
     vscode.window.visibleTextEditors.forEach(applyDecorations);
+    scheduleSchemaRefresh();
 }
 
 function deactivate() { }
