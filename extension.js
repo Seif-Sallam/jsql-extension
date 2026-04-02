@@ -2713,8 +2713,10 @@ function activate(context) {
                 }
 
                 // --- Table alias: jump to FROM/JOIN in query ---
+                // Only match if word IS the alias, not the bare table name
+                // (aliasMap keys both alias and table name)
                 const ref = aliasMap.get(word);
-                if (ref) {
+                if (ref && ref.alias && ref.alias.toLowerCase() === word) {
                     return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + ref.tableStart));
                 }
 
