@@ -59,6 +59,32 @@ const ALL_SQL_KEYWORDS = new Set([
     'GROUP_CONCAT', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LEAD', 'LAG', 'FIRST_VALUE', 'LAST_VALUE',
     'ROUND', 'FLOOR', 'CEIL', 'CEILING', 'ABS', 'MOD', 'POWER', 'GREATEST', 'LEAST', 'TIMESTAMPDIFF', 'EXTRACT',
     'JSON', 'JSON_EXTRACT', 'JSON_UNQUOTE',
+    // BigQuery / Spanner clauses and type keywords
+    'QUALIFY', 'TABLESAMPLE', 'PIVOT', 'UNPIVOT',
+    'STRUCT', 'ARRAY', 'UNNEST',
+    'TIMESTAMP', 'DATETIME', 'TIME',
+    'FOLLOWING', 'PRECEDING', 'UNBOUNDED',
+    'ROWS', 'RANGE',
+    'IGNORE', 'RESPECT',
+    // BigQuery / Spanner functions
+    'STRING_AGG', 'ARRAY_AGG', 'ARRAY_LENGTH', 'ARRAY_TO_STRING', 'ARRAY_CONCAT', 'ARRAY_REVERSE', 'GENERATE_ARRAY',
+    'ANY_VALUE', 'COUNTIF', 'LOGICAL_AND', 'LOGICAL_OR', 'APPROX_COUNT_DISTINCT',
+    'PERCENTILE_CONT', 'PERCENTILE_DISC', 'PERCENT_RANK', 'CUME_DIST', 'NTILE', 'NTH_VALUE',
+    'REGEXP_REPLACE', 'REGEXP_EXTRACT', 'REGEXP_CONTAINS',
+    'DATE_TRUNC', 'TIMESTAMP_TRUNC', 'DATETIME_TRUNC',
+    'DATETIME_ADD', 'DATETIME_SUB', 'DATETIME_DIFF',
+    'TIMESTAMP_ADD', 'TIMESTAMP_SUB', 'TIMESTAMP_DIFF',
+    'DATE_DIFF', 'PARSE_DATE', 'PARSE_TIMESTAMP', 'PARSE_DATETIME',
+    'FORMAT_DATE', 'FORMAT_TIMESTAMP', 'FORMAT_DATETIME',
+    'CURRENT_TIMESTAMP', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_DATETIME',
+    'SAFE_DIVIDE', 'SAFE_CAST',
+    'GENERATE_UUID',
+    'SPLIT', 'STARTS_WITH', 'ENDS_WITH', 'STRPOS', 'LPAD', 'RPAD', 'REPEAT', 'REVERSE',
+    'CHAR_LENGTH', 'BYTE_LENGTH', 'FORMAT', 'TO_BASE64', 'FROM_BASE64', 'TO_HEX', 'FROM_HEX',
+    'SHA256', 'MD5', 'FARM_FINGERPRINT',
+    'JSON_VALUE', 'JSON_QUERY', 'JSON_EXTRACT_SCALAR', 'JSON_EXTRACT_ARRAY', 'JSON_OBJECT', 'JSON_ARRAY',
+    'BIT_AND', 'BIT_OR', 'BIT_XOR', 'BIT_COUNT',
+    'RANGE_BUCKET',
 ]);
 
 function levenshtein(a, b) {
@@ -529,11 +555,11 @@ function formatSQL(sql) {
     s = s.replace(/\s+/g, ' ').trim();
 
     // Uppercase keywords
-    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|JSON)\b/gi, m => m.toUpperCase());
+    s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT)\b/gi, m => m.toUpperCase());
 
     // Break before top-level clauses — longer phrases first to avoid partial matches
     s = s.replace(
-        /\b(UNION ALL|GROUP BY|ORDER BY|INSERT INTO|DELETE FROM|SELECT|FROM|WHERE|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|RETURNING|VALUES|SET|WITH)\b/g,
+        /\b(UNION ALL|GROUP BY|ORDER BY|INSERT INTO|DELETE FROM|SELECT|FROM|WHERE|HAVING|QUALIFY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|RETURNING|VALUES|SET|WITH)\b/g,
         '\n$1'
     );
 
@@ -628,7 +654,7 @@ function formatSQL(sql) {
     return out.join('\n');
 }
 
-const SPECIFIC_PATTERNS = [
+const _PATTERNS_HEAD = [
     { re: /\{#[\s\S]*?#\}/g, key: 'comment' },
     { re: /\{%-?[\s\S]*?-?%\}/g, key: 'jinja' },
     { re: /\{\{[\s\S]*?\}\}/g, key: 'jinja' },
@@ -638,6 +664,14 @@ const SPECIFIC_PATTERNS = [
     { re: /"[^"]*"/g, key: 'string' },
     { re: /:[a-zA-Z_][a-zA-Z0-9_]*/g, key: 'param' },
     { re: /\b(TRUE|FALSE)\b/gi, key: 'boolean' },
+];
+const _PATTERNS_TAIL = [
+    { re: /\b\d+(\.\d+)?\b/g, key: 'number' },
+    { re: /->>|->|!=|<>|<=|>=|[<>=]/g, key: 'operator' },
+];
+
+const SPECIFIC_PATTERNS_SQL = [
+    ..._PATTERNS_HEAD,
     {
         re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON)\b/gi,
         key: 'keyword'
@@ -646,8 +680,20 @@ const SPECIFIC_PATTERNS = [
         re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE)\s*(?=\()/gi,
         key: 'function'
     },
-    { re: /\b\d+(\.\d+)?\b/g, key: 'number' },
-    { re: /->>|->|!=|<>|<=|>=|[<>=]/g, key: 'operator' },
+    ..._PATTERNS_TAIL,
+];
+
+const SPECIFIC_PATTERNS_BQ = [
+    ..._PATTERNS_HEAD,
+    {
+        re: /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT)\b/gi,
+        key: 'keyword'
+    },
+    {
+        re: /\b(COUNT|SUM|AVG|MIN|MAX|COALESCE|NULLIF|IFNULL|IF|CONCAT|CONCAT_WS|SUBSTRING|SUBSTR|LENGTH|TRIM|LTRIM|RTRIM|UPPER|LOWER|REPLACE|INSTR|DATE|DATE_FORMAT|DATE_ADD|DATE_SUB|DATEDIFF|NOW|CURDATE|CAST|CONVERT|GROUP_CONCAT|ROW_NUMBER|RANK|DENSE_RANK|LEAD|LAG|FIRST_VALUE|LAST_VALUE|ROUND|FLOOR|CEIL|CEILING|ABS|MOD|POWER|GREATEST|LEAST|TIMESTAMPDIFF|EXTRACT|JSON_EXTRACT|JSON_UNQUOTE|STRING_AGG|ARRAY_AGG|ARRAY_LENGTH|ARRAY_TO_STRING|ARRAY_CONCAT|ARRAY_REVERSE|GENERATE_ARRAY|ANY_VALUE|COUNTIF|LOGICAL_AND|LOGICAL_OR|APPROX_COUNT_DISTINCT|PERCENTILE_CONT|PERCENTILE_DISC|PERCENT_RANK|CUME_DIST|NTILE|NTH_VALUE|REGEXP_REPLACE|REGEXP_EXTRACT|REGEXP_CONTAINS|DATE_TRUNC|TIMESTAMP_TRUNC|DATETIME_TRUNC|DATETIME_ADD|DATETIME_SUB|DATETIME_DIFF|TIMESTAMP_ADD|TIMESTAMP_SUB|TIMESTAMP_DIFF|DATE_DIFF|PARSE_DATE|PARSE_TIMESTAMP|PARSE_DATETIME|FORMAT_DATE|FORMAT_TIMESTAMP|FORMAT_DATETIME|CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME|CURRENT_DATETIME|SAFE_DIVIDE|SAFE_CAST|GENERATE_UUID|SPLIT|STARTS_WITH|ENDS_WITH|STRPOS|LPAD|RPAD|REPEAT|REVERSE|CHAR_LENGTH|BYTE_LENGTH|FORMAT|TO_BASE64|FROM_BASE64|TO_HEX|FROM_HEX|SHA256|MD5|FARM_FINGERPRINT|JSON_VALUE|JSON_QUERY|JSON_EXTRACT_SCALAR|JSON_EXTRACT_ARRAY|JSON_OBJECT|JSON_ARRAY|BIT_AND|BIT_OR|BIT_XOR|BIT_COUNT|RANGE_BUCKET|STRUCT|UNNEST|ARRAY)\s*(?=\()/gi,
+        key: 'function'
+    },
+    ..._PATTERNS_TAIL,
 ];
 
 const IDENT_RE = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
@@ -673,12 +719,18 @@ function lineEndsLikeColumnContinuation(text) {
 }
 
 function splitAtFrom(text) {
-    const match = /\bFROM\b/i.exec(text);
-    if (!match) return null;
-    return {
-        beforeFrom: text.slice(0, match.index).trim(),
-        afterFrom: text.slice(match.index).trim(),
-    };
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '(') { depth++; continue; }
+        if (text[i] === ')') { depth--; continue; }
+        if (depth === 0 && matchKeyword(text, i, 'FROM')) {
+            return {
+                beforeFrom: text.slice(0, i).trim(),
+                afterFrom: text.slice(i).trim(),
+            };
+        }
+    }
+    return null;
 }
 
 function detectMissingSelectCommas(sql) {
@@ -687,6 +739,7 @@ function detectMissingSelectCommas(sql) {
     let offset = 0;
     let inSelect = false;
     let previousColumn = null;
+    let parenDepth = 0;
 
     for (const rawLine of lines) {
         const lineOffset = offset;
@@ -695,6 +748,22 @@ function detectMissingSelectCommas(sql) {
         const withoutComment = stripComment(rawLine);
         const trimmed = withoutComment.trim();
         if (!trimmed) continue;
+
+        const depthAtLineStart = parenDepth;
+        for (const ch of trimmed) {
+            if (ch === '(') parenDepth++;
+            else if (ch === ')') parenDepth--;
+        }
+
+        // Line started inside an open subquery — skip outer SELECT/FROM logic.
+        // If it closed the paren (depth back to 0), let it update previousColumn
+        // so the alias line (e.g. ") AS foo,") is reflected correctly.
+        if (depthAtLineStart > 0) {
+            if (parenDepth === 0 && inSelect && previousColumn) {
+                previousColumn = { text: trimmed };
+            }
+            continue;
+        }
 
         if (!inSelect) {
             if (!SELECT_START_RE.test(trimmed)) continue;
@@ -859,6 +928,7 @@ function findSQLRanges(text) {
     const ranges = [];
     const TRIPLE = /('''|""")/g;
     const SQL_START = /^\s*(?:(?:--[^\n]*|\/\*[\s\S]*?\*\/)\s*)*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP)\b/i;
+    const DIALECT_HINT = /^--(bq|spanner|sql)\s*(?:\n|$)/i;
     let m;
     while ((m = TRIPLE.exec(text)) !== null) {
         const quote = m[1];
@@ -868,12 +938,17 @@ function findSQLRanges(text) {
         const start = m.index + quote.length;
         const end = text.indexOf(quote, start);
         if (end !== -1 && SQL_START.test(text.slice(start, end))) {
+            const content = text.slice(start, end);
+            const hintMatch = DIALECT_HINT.exec(content);
+            const hintValue = hintMatch ? hintMatch[1].toLowerCase() : 'sql';
+            const dialect = (hintValue === 'bq' || hintValue === 'spanner') ? 'bq' : 'sql';
             ranges.push({
                 start,
                 end,
                 fullStart: m.index,
                 fullEnd: end + quote.length,
                 quote,
+                dialect,
             });
             TRIPLE.lastIndex = end + quote.length;
         }
@@ -921,11 +996,12 @@ function activate(context) {
         const bracketErrorRanges = [];
         const sqlRanges = findSQLRanges(text);
 
-        for (const { start, end } of sqlRanges) {
+        for (const { start, end, dialect } of sqlRanges) {
             const content = text.slice(start, end);
+            const patterns = dialect === 'bq' ? SPECIFIC_PATTERNS_BQ : SPECIFIC_PATTERNS_SQL;
 
             const occupied = new Set();
-            for (const { re, key } of SPECIFIC_PATTERNS) {
+            for (const { re, key } of patterns) {
                 re.lastIndex = 0;
                 let m;
                 while ((m = re.exec(content)) !== null) {

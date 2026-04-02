@@ -138,6 +138,37 @@ const rangeCases = [
             'x = 1',
         ].join('\n'),
         expectedCount: 1,
+        expectedDialect: 'sql',
+    },
+    {
+        name: 'detects --bq dialect hint',
+        input: [
+            'query = """--bq',
+            'SELECT ARRAY_AGG(id) FROM t',
+            '"""',
+        ].join('\n'),
+        expectedCount: 1,
+        expectedDialect: 'bq',
+    },
+    {
+        name: 'detects --spanner dialect hint as bq',
+        input: [
+            'query = """--spanner',
+            'SELECT ARRAY_AGG(id) FROM t',
+            '"""',
+        ].join('\n'),
+        expectedCount: 1,
+        expectedDialect: 'bq',
+    },
+    {
+        name: 'treats --sql hint as default sql dialect',
+        input: [
+            'query = """--sql',
+            'SELECT id FROM users',
+            '"""',
+        ].join('\n'),
+        expectedCount: 1,
+        expectedDialect: 'sql',
     },
     {
         name: 'ignores non-SQL triple-quoted strings',
@@ -259,6 +290,126 @@ const commaWarningCases = [
         ].join('\n'),
         expectedCount: 0,
     },
+    // Subquery nesting — multi-line subquery columns
+    {
+        name: 'warns when multi-line subquery column is missing trailing comma',
+        input: [
+            'SELECT',
+            '    (',
+            '        SELECT MAX(id)',
+            '        FROM inner_t',
+            '    ) AS max_id',
+            '    col2',
+            'FROM outer_t',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'does not warn when multi-line subquery column has trailing comma',
+        input: [
+            'SELECT',
+            '    (',
+            '        SELECT MAX(id)',
+            '        FROM inner_t',
+            '    ) AS max_id,',
+            '    col2',
+            'FROM outer_t',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    // CASE depth — nested CASE expressions
+    {
+        name: 'does not warn for nested CASE expressions with correct commas',
+        input: [
+            'SELECT',
+            '    CASE',
+            '        WHEN x = 1 THEN',
+            '            CASE',
+            '                WHEN y = 1 THEN "a"',
+            '                ELSE "b"',
+            '            END',
+            '        ELSE "c"',
+            '    END AS result,',
+            '    col2',
+            'FROM t',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'warns for missing comma after nested CASE expression',
+        input: [
+            'SELECT',
+            '    CASE',
+            '        WHEN x = 1 THEN',
+            '            CASE',
+            '                WHEN y = 1 THEN "a"',
+            '                ELSE "b"',
+            '            END',
+            '        ELSE "c"',
+            '    END AS result',
+            '    col2',
+            'FROM t',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+    // CTE / WITH cases
+    {
+        name: 'warns on missing comma inside CTE inner SELECT',
+        input: [
+            'WITH cte AS (',
+            '    SELECT',
+            '        col1',
+            '        col2',
+            '    FROM t',
+            ')',
+            'SELECT * FROM cte',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'does not warn inside CTE when commas are present',
+        input: [
+            'WITH cte AS (',
+            '    SELECT',
+            '        col1,',
+            '        col2',
+            '    FROM t',
+            ')',
+            'SELECT * FROM cte',
+        ].join('\n'),
+        expectedCount: 0,
+    },
+    {
+        name: 'warns on missing comma in outer SELECT after CTE',
+        input: [
+            'WITH cte AS (SELECT id FROM t)',
+            'SELECT',
+            '    col1',
+            '    col2',
+            'FROM cte',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'warns on missing comma when column contains a subquery with FROM',
+        input: [
+            'SELECT',
+            '    (SELECT MAX(id) FROM users) AS max_id',
+            '    name',
+            'FROM accounts',
+        ].join('\n'),
+        expectedCount: 1,
+    },
+    {
+        name: 'does not warn when subquery column has a trailing comma',
+        input: [
+            'SELECT',
+            '    (SELECT MAX(id) FROM users) AS max_id,',
+            '    name',
+            'FROM accounts',
+        ].join('\n'),
+        expectedCount: 0,
+    },
     {
         name: 'warns when a multiline CASE expression is missing its trailing comma before the next column',
         input: [
@@ -323,11 +474,19 @@ function runFormatCases() {
 
 function runRangeCases() {
     for (const testCase of rangeCases) {
+        const ranges = findSQLRanges(testCase.input);
         assert.strictEqual(
-            findSQLRanges(testCase.input).length,
+            ranges.length,
             testCase.expectedCount,
             `findSQLRanges failed: ${testCase.name}`
         );
+        if (testCase.expectedDialect !== undefined && ranges.length > 0) {
+            assert.strictEqual(
+                ranges[0].dialect,
+                testCase.expectedDialect,
+                `findSQLRanges dialect failed: ${testCase.name}`
+            );
+        }
     }
 }
 
