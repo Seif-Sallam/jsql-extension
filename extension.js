@@ -1427,6 +1427,21 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
+    // CTE names — identifier AS ( is unique to CTE definitions
+    const cteRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(/gi;
+    while ((match = cteRe.exec(sql)) !== null) {
+        const cteName = match[1];
+        if (ALL_SQL_KEYWORDS.has(cteName.toUpperCase())) continue;
+        const start = match.index;
+        const end = start + cteName.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        let overlaps = false;
+        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+        if (overlaps) continue;
+        addUniqueRange(tableRanges, seenTables, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
     // Explicit AS aliases — covers both column aliases (SELECT expr AS alias)
     // and table aliases (FROM table AS t)
     const asAliasRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
@@ -1446,6 +1461,25 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     // Implicit table aliases — FROM/JOIN table alias (no AS keyword)
     const implicitAliasRe = /\b(?:FROM|JOIN|UPDATE|INTO)\s+[A-Za-z_][A-Za-z0-9_.]*\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
     while ((match = implicitAliasRe.exec(sql)) !== null) {
+        const alias = match[1];
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        const start = match.index + match[0].length - alias.length;
+        const end = start + alias.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        let overlaps = false;
+        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+        if (overlaps) continue;
+        addUniqueRange(aliasRanges, seenAliases, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
+    // Implicit column aliases (AS is optional) — two safe patterns:
+    //   1. alias after closing paren:   COUNT(*) total,   (SELECT ...) sub,
+    //   2. alias after qualified column: u.name full_name,
+    // Both require the alias to be immediately before a comma or end of line
+    // to avoid false positives in WHERE/ON conditions.
+    const implicitColAliasRe = /(?:\)|(?:\.[A-Za-z_][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|$))/gm;
+    while ((match = implicitColAliasRe.exec(sql)) !== null) {
         const alias = match[1];
         if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
         const start = match.index + match[0].length - alias.length;
