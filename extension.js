@@ -733,13 +733,91 @@ function splitAtFrom(text) {
     return null;
 }
 
+function scanLineStructure(text, startParenDepth, startCaseDepth) {
+    const selectStarts = [];
+    let parenDepth = startParenDepth;
+    let caseDepth = startCaseDepth;
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+
+        if (ch === '\'' || ch === '"') {
+            const quote = ch;
+            i++;
+            while (i < text.length) {
+                if (text[i] === quote) {
+                    if (text[i + 1] === quote) {
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                i++;
+            }
+            continue;
+        }
+
+        if (ch === '(') {
+            parenDepth++;
+            continue;
+        }
+
+        if (ch === ')') {
+            parenDepth = Math.max(0, parenDepth - 1);
+            continue;
+        }
+
+        if (matchKeyword(text, i, 'SELECT')) {
+            selectStarts.push({ index: i, parenDepth, caseDepth });
+            i += 5;
+            continue;
+        }
+
+        if (matchKeyword(text, i, 'CASE')) {
+            caseDepth++;
+            i += 3;
+            continue;
+        }
+
+        if (matchKeyword(text, i, 'END')) {
+            caseDepth = Math.max(0, caseDepth - 1);
+            i += 2;
+        }
+    }
+
+    return { endParenDepth: parenDepth, endCaseDepth: caseDepth, selectStarts };
+}
+
+function beginSelectContext(lineText, selectIndex, baseParenDepth, baseCaseDepth) {
+    const selectContext = {
+        baseParenDepth,
+        baseCaseDepth,
+        previousColumn: null,
+    };
+    const selectText = lineText.slice(selectIndex).trimStart();
+
+    if (SELECT_ONLY_RE.test(selectText)) {
+        return selectContext;
+    }
+
+    const selectRemainder = selectText.replace(SELECT_PREFIX_RE, '').trim();
+    const inlineSplit = splitAtFrom(selectRemainder);
+    const inlineColumn = inlineSplit ? inlineSplit.beforeFrom : selectRemainder;
+
+    if (inlineColumn) {
+        selectContext.previousColumn = { text: inlineColumn };
+    }
+
+    return inlineSplit ? null : selectContext;
+}
+
 function detectMissingSelectCommas(sql) {
     const diagnostics = [];
     const lines = sql.split('\n');
     let offset = 0;
-    let inSelect = false;
-    let previousColumn = null;
     let parenDepth = 0;
+    const caseStack = [];
+    const selectStack = [];
 
     for (const rawLine of lines) {
         const lineOffset = offset;
@@ -749,62 +827,70 @@ function detectMissingSelectCommas(sql) {
         const trimmed = withoutComment.trim();
         if (!trimmed) continue;
 
-        const depthAtLineStart = parenDepth;
-        for (const ch of trimmed) {
-            if (ch === '(') parenDepth++;
-            else if (ch === ')') parenDepth--;
-        }
+        const startParenDepth = parenDepth;
+        const startCaseDepth = caseStack.length;
+        const { endParenDepth, endCaseDepth, selectStarts } = scanLineStructure(
+            withoutComment,
+            startParenDepth,
+            startCaseDepth
+        );
 
-        // Line started inside an open subquery — skip outer SELECT/FROM logic.
-        // If it closed the paren (depth back to 0), let it update previousColumn
-        // so the alias line (e.g. ") AS foo,") is reflected correctly.
-        if (depthAtLineStart > 0) {
-            if (parenDepth === 0 && inSelect && previousColumn) {
-                previousColumn = { text: trimmed };
-            }
-            continue;
-        }
+        const activeSelect = selectStack[selectStack.length - 1];
+        if (activeSelect) {
+            const atTopLevelStart =
+                startParenDepth === activeSelect.baseParenDepth &&
+                startCaseDepth === activeSelect.baseCaseDepth;
 
-        if (!inSelect) {
-            if (!SELECT_START_RE.test(trimmed)) continue;
-            previousColumn = null;
+            if (atTopLevelStart) {
+                const lineSplit = splitAtFrom(trimmed);
+                if (lineSplit) {
+                    selectStack.pop();
+                } else if (!lineLooksLikeColumnStart(trimmed)) {
+                    if (activeSelect.previousColumn) {
+                        activeSelect.previousColumn = { text: trimmed };
+                    }
+                } else {
+                    if (
+                        activeSelect.previousColumn &&
+                        !activeSelect.previousColumn.text.endsWith(',') &&
+                        !lineEndsLikeColumnContinuation(activeSelect.previousColumn.text)
+                    ) {
+                        const start = lineOffset + rawLine.indexOf(trimmed);
+                        diagnostics.push({
+                            start,
+                            end: start + trimmed.length,
+                            message: 'Possible missing comma between SELECT columns.',
+                        });
+                    }
 
-            if (!SELECT_ONLY_RE.test(trimmed)) {
-                const selectRemainder = trimmed.replace(SELECT_PREFIX_RE, '').trim();
-                const inlineSplit = splitAtFrom(selectRemainder);
-                const inlineColumn = inlineSplit ? inlineSplit.beforeFrom : selectRemainder;
-                if (inlineColumn) {
-                    previousColumn = { text: inlineColumn };
+                    activeSelect.previousColumn = { text: trimmed };
                 }
-                inSelect = !inlineSplit;
             } else {
-                inSelect = true;
+                const returnedToTopLevel =
+                    endParenDepth === activeSelect.baseParenDepth &&
+                    endCaseDepth === activeSelect.baseCaseDepth;
+                if (returnedToTopLevel && activeSelect.previousColumn) {
+                    activeSelect.previousColumn = { text: trimmed };
+                }
             }
-            continue;
         }
 
-        const lineSplit = splitAtFrom(trimmed);
-        if (lineSplit) {
-            inSelect = false;
-            previousColumn = null;
-            continue;
+        for (const selectStart of selectStarts) {
+            const selectContext = beginSelectContext(
+                withoutComment,
+                selectStart.index,
+                selectStart.parenDepth,
+                selectStart.caseDepth
+            );
+            if (selectContext) {
+                selectStack.push(selectContext);
+            }
         }
 
-        if (!lineLooksLikeColumnStart(trimmed)) {
-            if (previousColumn) previousColumn = { text: trimmed };
-            continue;
-        }
+        parenDepth = endParenDepth;
 
-        if (previousColumn && !previousColumn.text.endsWith(',') && !lineEndsLikeColumnContinuation(previousColumn.text)) {
-            const start = lineOffset + rawLine.indexOf(trimmed);
-            diagnostics.push({
-                start,
-                end: start + trimmed.length,
-                message: 'Possible missing comma between SELECT columns.',
-            });
-        }
-
-        previousColumn = { text: trimmed };
+        while (caseStack.length < endCaseDepth) caseStack.push({});
+        while (caseStack.length > endCaseDepth) caseStack.pop();
     }
 
     return diagnostics;
@@ -954,6 +1040,44 @@ function findSQLRanges(text) {
         }
     }
     return ranges;
+}
+
+function buildFormattedSQLBlock(text, sqlRange) {
+    const outerQuote = '\'\'\'';
+    const original = text.slice(sqlRange.start, sqlRange.end);
+
+    // Detect base indentation from the first indented SQL line.
+    const indentMatch = original.match(/\n([ \t]+)/);
+    const indent = indentMatch ? indentMatch[1] : '    ';
+    const formattedLines = formatSQL(original.trim()).split('\n').map(line => indent + line).join('\n');
+
+    const openingLineStart = text.lastIndexOf('\n', sqlRange.fullStart - 1) + 1;
+    const baseIndent = (text.slice(openingLineStart, sqlRange.fullStart).match(/^[ \t]*/) || [''])[0];
+    const continuationIndent = baseIndent + '    ';
+
+    const closingQuoteStart = sqlRange.fullEnd - sqlRange.quote.length;
+    const closingLineEndIdx = text.indexOf('\n', sqlRange.fullEnd);
+    const closingLineEnd = closingLineEndIdx === -1 ? text.length : closingLineEndIdx;
+    const trailingClosingLine = text.slice(sqlRange.fullEnd, closingLineEnd);
+    const trailing = trailingClosingLine.trim();
+    let closingSuffix = '';
+    let continuation = '';
+
+    if (trailing) {
+        if (trailing.startsWith(',')) {
+            closingSuffix = ',';
+            const rest = trailing.slice(1).trim();
+            if (rest) continuation = '\n' + continuationIndent + rest;
+        } else {
+            continuation = '\n' + continuationIndent + trailing;
+        }
+    }
+
+    return {
+        start: sqlRange.fullStart,
+        end: closingLineEnd,
+        formatted: `${outerQuote}\n${formattedLines}${outerQuote}${closingSuffix}${continuation}`,
+    };
 }
 
 function buildDecorations(themeName) {
@@ -1120,19 +1244,16 @@ function activate(context) {
             return;
         }
 
-        const original = text.slice(sqlRange.start, sqlRange.end);
-
-        // Detect base indentation from the first indented line
-        const indentMatch = original.match(/\n([ \t]+)/);
-        const indent = indentMatch ? indentMatch[1] : '    ';
-
-        const formattedBody = '\n' + formatSQL(original.trim()).split('\n').map(l => indent + l).join('\n');
-        const formatted = `'''${formattedBody}\n'''`;
-
-        if (formatted === text.slice(sqlRange.fullStart, sqlRange.fullEnd)) return;
+        const replacement = buildFormattedSQLBlock(text, sqlRange);
+        const currentBlock = text.slice(replacement.start, replacement.end);
+        if (replacement.formatted === currentBlock) return;
 
         const edit = new vscode.WorkspaceEdit();
-        edit.replace(doc.uri, new vscode.Range(doc.positionAt(sqlRange.fullStart), doc.positionAt(sqlRange.fullEnd)), formatted);
+        edit.replace(
+            doc.uri,
+            new vscode.Range(doc.positionAt(replacement.start), doc.positionAt(replacement.end)),
+            replacement.formatted
+        );
         vscode.workspace.applyEdit(edit);
     }, null, context.subscriptions);
 

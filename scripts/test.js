@@ -3,7 +3,7 @@
 const assert = require('assert');
 const { loadExtensionInternals } = require('./load-formatter');
 
-const { formatSQL, findSQLRanges, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets } = loadExtensionInternals();
+const { formatSQL, findSQLRanges, buildFormattedSQLBlock, detectMissingSelectCommas, findMatchingBracket, findUnmatchedBrackets } = loadExtensionInternals();
 
 const formatCases = [
     {
@@ -201,6 +201,74 @@ const rangeCases = [
     },
 ];
 
+const blockFormatCases = [
+    {
+        name: 'keeps the closing triple quote attached to the final SQL line',
+        input: [
+            "query = '''",
+            '                         SELECT starting_date',
+            '                         FROM user_contract uc',
+            '                         WHERE uc.id_user = :id_user',
+            "                         AND uc.is_active = 1'''",
+        ].join('\n'),
+        expected: [
+            "query = '''",
+            '                         SELECT starting_date',
+            '                         FROM user_contract uc',
+            '                         WHERE uc.id_user = :id_user',
+            "                             AND uc.is_active = 1'''",
+        ].join('\n'),
+    },
+    {
+        name: 'moves a standalone closing triple quote onto the final SQL line and keeps trailing args on the next line',
+        input: [
+            "query = '''",
+            '        SELECT code, name',
+            '        FROM offboarding_reason',
+            '        WHERE category = :category',
+            '            AND is_active = 1',
+            "            ''', category=category",
+        ].join('\n'),
+        expected: [
+            "query = '''",
+            '        SELECT code, name',
+            '        FROM offboarding_reason',
+            '        WHERE category = :category',
+            "            AND is_active = 1''',",
+            '    category=category',
+        ].join('\n'),
+    },
+    {
+        name: 'uses the surrounding Python indentation for trailing args moved below the closing triple quote',
+        input: [
+            "    result = run_query('''",
+            '            SELECT id',
+            '            FROM users',
+            "            ''', account_id=account_id)",
+        ].join('\n'),
+        expected: [
+            "    result = run_query('''",
+            '            SELECT id',
+            "            FROM users''',",
+            '        account_id=account_id)',
+        ].join('\n'),
+    },
+    {
+        name: 'uses triple single quotes outside while normalizing SQL string quotes to double quotes inside',
+        input: [
+            'query = """',
+            "    SELECT 'active' AS status",
+            '    FROM users',
+            '"""',
+        ].join('\n'),
+        expected: [
+            "query = '''",
+            '    SELECT "active" AS status',
+            "    FROM users'''",
+        ].join('\n'),
+    },
+];
+
 const commaWarningCases = [
     {
         name: 'warns on missing comma between multiline SELECT columns',
@@ -316,6 +384,24 @@ const commaWarningCases = [
             'FROM outer_t',
         ].join('\n'),
         expectedCount: 0,
+    },
+    {
+        name: 'warns when a nested subquery returns to an outer SELECT item that is missing a trailing comma',
+        input: [
+            'SELECT',
+            '    (',
+            '        SELECT',
+            '            (',
+            '                SELECT MAX(id)',
+            '                FROM deepest_t',
+            '            ) AS nested_value,',
+            '            middle_value',
+            '        FROM middle_t',
+            '    ) AS subquery_result',
+            '    outer_value',
+            'FROM outer_t',
+        ].join('\n'),
+        expectedCount: 1,
     },
     // CASE depth — nested CASE expressions
     {
@@ -490,6 +576,25 @@ function runRangeCases() {
     }
 }
 
+function runBlockFormatCases() {
+    for (const testCase of blockFormatCases) {
+        const range = findSQLRanges(testCase.input)[0];
+        assert.ok(range, `buildFormattedSQLBlock failed to find SQL range: ${testCase.name}`);
+
+        const replacement = buildFormattedSQLBlock(testCase.input, range);
+        const actual =
+            testCase.input.slice(0, replacement.start) +
+            replacement.formatted +
+            testCase.input.slice(replacement.end);
+
+        assert.strictEqual(
+            actual,
+            testCase.expected,
+            `buildFormattedSQLBlock failed: ${testCase.name}`
+        );
+    }
+}
+
 function runCommaWarningCases() {
     for (const testCase of commaWarningCases) {
         assert.strictEqual(
@@ -523,6 +628,7 @@ function runUnmatchedBracketCases() {
 function main() {
     runFormatCases();
     runRangeCases();
+    runBlockFormatCases();
     runCommaWarningCases();
     runBracketCases();
     runUnmatchedBracketCases();
