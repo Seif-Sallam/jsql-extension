@@ -915,6 +915,8 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
         if (m.index > 0 && (sql[m.index - 1] === '.' || sql[m.index - 1] === ':')) continue;
         // Skip if followed by `.` (it's a table/alias qualifier itself)
         if (m.index + m[0].length < sql.length && sql[m.index + m[0].length] === '.') continue;
+        // Skip alias definitions — token immediately after AS keyword
+        if (/\bAS\s*$/i.test(sql.slice(0, m.index))) continue;
         const tables = [...ambiguous.get(col)].sort().join(', ');
         diagnostics.push({
             start: m.index,
@@ -1023,7 +1025,8 @@ function detectMissingSelectCommas(sql) {
                 if (lineSplit) {
                     selectStack.pop();
                 } else if (!lineLooksLikeColumnStart(trimmed)) {
-                    if (activeSelect.previousColumn) {
+                    // Don't let Jinja tags overwrite previousColumn — they're not SQL
+                    if (activeSelect.previousColumn && !isJinjaControlTag(trimmed) && !/^\{[{#%]/.test(trimmed)) {
                         activeSelect.previousColumn = { text: trimmed };
                     }
                 } else {
