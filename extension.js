@@ -3,9 +3,10 @@ const vscode = require('vscode');
 
 const THEMES = {
     dracula: {
-        identifier: { color: '#8B949E' },
-        table: { color: '#FFB86C' },
-        column: { color: '#E6EDF3' },
+        identifier: { color: '#A0ACBE' },     // brighter blue-gray — readable, not blackish
+        table: { color: '#F4C56E' },           // warm gold
+        column: { color: '#82B1FF' },          // periwinkle blue
+        alias: { color: '#5DE3C0' },           // bright mint — "a name you gave it"
         keyword: { color: '#6BB8C8', fontWeight: 'bold' },
         function: { color: '#FF79C6' },
         param: { color: '#FFB86C' },
@@ -18,9 +19,10 @@ const THEMES = {
         boolean: { color: '#FF8585', fontWeight: 'bold' },
     },
     monokai: {
-        identifier: { color: '#A6ACB9' },
-        table: { color: '#66D9EF' },
-        column: { color: '#FFF4D6' },
+        identifier: { color: '#B0B8C8' },      // brighter neutral
+        table: { color: '#E07850' },            // terracotta
+        column: { color: '#7EC8E3' },           // sky blue
+        alias: { color: '#5BCFB5' },            // teal mint
         keyword: { color: '#F92672', fontWeight: 'bold' },
         function: { color: '#A6E22E' },
         param: { color: '#FD971F' },
@@ -33,9 +35,10 @@ const THEMES = {
         boolean: { color: '#66D9E8', fontWeight: 'bold' },
     },
     'one-dark': {
-        identifier: { color: '#7F848E' },
-        table: { color: '#E5C07B' },
-        column: { color: '#D7DAE0' },
+        identifier: { color: '#9DA5B4' },       // brighter neutral
+        table: { color: '#4EC9B0' },            // VS Code teal
+        column: { color: '#7ECAE9' },           // light cornflower
+        alias: { color: '#56D6AE' },            // softer mint teal
         keyword: { color: '#C678DD', fontWeight: 'bold' },
         function: { color: '#61AFEF' },
         param: { color: '#D19A66' },
@@ -1407,8 +1410,10 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     const opaque = buildOpaqueMask(sql);
     const tableRanges = [];
     const columnRanges = [];
+    const aliasRanges = [];
     const seenTables = new Set();
     const seenColumns = new Set();
+    const seenAliases = new Set();
     const occupied = new Set();
     const tableRefRe = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/gi;
     let match;
@@ -1419,6 +1424,37 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         if (rangeOverlapsOpaque(opaque, start, end)) continue;
 
         addUniqueRange(tableRanges, seenTables, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
+    // Explicit AS aliases — covers both column aliases (SELECT expr AS alias)
+    // and table aliases (FROM table AS t)
+    const asAliasRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = asAliasRe.exec(sql)) !== null) {
+        const alias = match[1];
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        const start = match.index + match[0].length - alias.length;
+        const end = start + alias.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        let overlaps = false;
+        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+        if (overlaps) continue;
+        addUniqueRange(aliasRanges, seenAliases, start, end);
+        for (let i = start; i < end; i++) occupied.add(i);
+    }
+
+    // Implicit table aliases — FROM/JOIN table alias (no AS keyword)
+    const implicitAliasRe = /\b(?:FROM|JOIN|UPDATE|INTO)\s+[A-Za-z_][A-Za-z0-9_.]*\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = implicitAliasRe.exec(sql)) !== null) {
+        const alias = match[1];
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        const start = match.index + match[0].length - alias.length;
+        const end = start + alias.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        let overlaps = false;
+        for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+        if (overlaps) continue;
+        addUniqueRange(aliasRanges, seenAliases, start, end);
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
@@ -1453,7 +1489,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
-    return { tableRanges, columnRanges };
+    return { tableRanges, columnRanges, aliasRanges };
 }
 
 function buildDecorations(themeName) {
@@ -1619,6 +1655,21 @@ function activate(context) {
 
                 const absStart = start + relStart;
                 collected.column.push(new vscode.Range(
+                    doc.positionAt(absStart),
+                    doc.positionAt(absStart + (relEnd - relStart))
+                ));
+                for (let i = relStart; i < relEnd; i++) occupied.add(i);
+            }
+
+            for (const { start: relStart, end: relEnd } of semanticRanges.aliasRanges) {
+                let overlaps = false;
+                for (let i = relStart; i < relEnd; i++) {
+                    if (occupied.has(i)) { overlaps = true; break; }
+                }
+                if (overlaps) continue;
+
+                const absStart = start + relStart;
+                collected.alias.push(new vscode.Range(
                     doc.positionAt(absStart),
                     doc.positionAt(absStart + (relEnd - relStart))
                 ));
