@@ -1969,9 +1969,29 @@ function activate(context) {
     }
 
     function getConfiguredScopes() {
-        const configured = cfg().get('scopes', []);
-        if (!Array.isArray(configured)) return [];
-        return configured.filter(s => s && typeof s.prefix === 'string' && Array.isArray(s.files));
+        // For resource-scoped settings, reading requires a file URI inside the folder.
+        // We use a synthetic placeholder file URI so VS Code resolves folder-level overrides.
+        const wsFolders = vscode.workspace.workspaceFolders || [];
+        const seen = new Set();
+        const all = [];
+
+        const sources = wsFolders.length
+            ? wsFolders.map(f => {
+                const fileUri = vscode.Uri.joinPath(f.uri, '.jsql-scope-placeholder');
+                return vscode.workspace.getConfiguration('jsqlSyntax', fileUri);
+            })
+            : [cfg()];
+
+        for (const config of sources) {
+            const configured = config.get('scopes', []);
+            if (!Array.isArray(configured)) continue;
+            for (const s of configured) {
+                if (!s || typeof s.prefix !== 'string' || !Array.isArray(s.files)) continue;
+                const key = s.prefix + '::' + s.files.join(',');
+                if (!seen.has(key)) { seen.add(key); all.push(s); }
+            }
+        }
+        return all;
     }
 
     function semanticWarningsEnabled() {
@@ -1981,18 +2001,40 @@ function activate(context) {
     // Returns the schemaMetadata appropriate for the given document.
     // Matches the document's workspace-relative path against configured scope prefixes,
     // picking the most specific (longest) match. Falls back to globalMetadata.
+    function pathMatchesPrefix(relPath, prefix) {
+        // Normalize: strip leading slash, trailing slash, and trailing /** or /*
+        let norm = prefix.replace(/\\/g, '/').replace(/^\//, '').replace(/\/\*\*$/, '').replace(/\/\*$/, '').replace(/\/$/, '');
+        const path = relPath.replace(/\\/g, '/');
+        const isGlobPrefix = norm.startsWith('**/');
+
+        if (isGlobPrefix) {
+            // **/X — matches any path that has X as a directory component anywhere
+            const suffix = norm.slice(3);
+            return path === suffix ||
+                path.startsWith(suffix + '/') ||
+                path.includes('/' + suffix + '/') ||
+                path.endsWith('/' + suffix);
+        }
+
+        // Plain prefix — must start with prefix/ or equal it
+        return path === norm || path.startsWith(norm + '/');
+    }
+
     function resolveMetadata(doc) {
         if (!doc || !vscode.workspace.workspaceFolders) return globalMetadata;
         const docFsPath = doc.uri.fsPath.replace(/\\/g, '/');
-        let best = null, bestLen = -1;
+        let best = null, bestSpecificity = -1;
         for (const wsFolder of vscode.workspace.workspaceFolders) {
             const wsPath = wsFolder.uri.fsPath.replace(/\\/g, '/');
             if (!docFsPath.startsWith(wsPath)) continue;
             const relPath = docFsPath.slice(wsPath.length).replace(/^\//, '');
             for (const [prefix, meta] of scopedMetadataMap) {
-                const normalizedPrefix = prefix.endsWith('/') ? prefix : prefix + '/';
-                if ((relPath + '/').startsWith(normalizedPrefix) && normalizedPrefix.length > bestLen) {
-                    bestLen = normalizedPrefix.length;
+                if (!pathMatchesPrefix(relPath, prefix)) continue;
+                // Exact prefixes are more specific than **/ globs; longer = more specific
+                const isGlob = prefix.startsWith('**/');
+                const specificity = isGlob ? prefix.length : prefix.length + 10000;
+                if (specificity > bestSpecificity) {
+                    bestSpecificity = specificity;
                     best = meta;
                 }
             }
@@ -2052,6 +2094,7 @@ function activate(context) {
 
         // Load scoped files — each scope gets its own isolated metadata
         const configuredScopes = getConfiguredScopes();
+        console.log('[jsqlSyntax] Configured scopes:', JSON.stringify(configuredScopes));
         const nextScopedMap = new Map();
         for (const scope of configuredScopes) {
             const prefix = scope.prefix.trim().replace(/\\/g, '/').replace(/\/$/, '');
@@ -2071,6 +2114,7 @@ function activate(context) {
         if (refreshVersion !== schemaRefreshVersion) return;
         globalMetadata = nextGlobal;
         scopedMetadataMap = nextScopedMap;
+        console.log('[jsqlSyntax] Loaded scoped metadata:', [...nextScopedMap.entries()].map(([k, v]) => `${k}: ${v.tables.size} tables`));
         vscode.window.visibleTextEditors.forEach(applyDecorations);
     }
 
@@ -2327,6 +2371,188 @@ function activate(context) {
             replacement.formatted
         );
         vscode.workspace.applyEdit(edit);
+    }, null, context.subscriptions);
+
+    vscode.commands.registerCommand('jsqlSyntax.scopeDebug', async () => {
+        const doc = vscode.window.activeTextEditor?.document;
+        const wsFolders = vscode.workspace.workspaceFolders || [];
+
+        const lines = [];
+        lines.push(`Workspace folders: ${wsFolders.map(w => w.uri.fsPath).join(', ') || '(none)'}`);
+        lines.push(`Active file: ${doc?.uri.fsPath ?? '(none)'}`);
+        lines.push('');
+
+        if (doc) {
+            const docFsPath = doc.uri.fsPath.replace(/\\/g, '/');
+            for (const ws of wsFolders) {
+                const wsPath = ws.uri.fsPath.replace(/\\/g, '/');
+                if (docFsPath.startsWith(wsPath)) {
+                    const relPath = docFsPath.slice(wsPath.length).replace(/^\//, '');
+                    lines.push(`Relative path: ${relPath}`);
+                }
+            }
+        }
+
+        lines.push('');
+        lines.push(`Configured scopes (${scopedMetadataMap.size}):`);
+        for (const [prefix, meta] of scopedMetadataMap) {
+            lines.push(`  "${prefix}" → ${meta.tables.size} tables: ${[...meta.tables].slice(0, 5).join(', ')}${meta.tables.size > 5 ? '...' : ''}`);
+        }
+
+        lines.push('');
+        lines.push(`Global metadata: ${globalMetadata.tables.size} tables`);
+
+        const resolved = resolveMetadata(doc);
+        lines.push('');
+        lines.push(`Resolved metadata for this file: ${resolved.tables.size} tables: ${[...resolved.tables].slice(0, 10).join(', ')}`);
+
+        vscode.window.showInformationMessage(lines.join('\n'), { modal: true });
+    }, null, context.subscriptions);
+
+    vscode.commands.registerCommand('jsqlSyntax.manageScopes', async () => {
+        const wsFolders = vscode.workspace.workspaceFolders || [];
+
+        // Determine save target: WorkspaceFolder writes to .vscode/settings.json
+        // Global is the fallback when no workspace is open
+        let saveTarget = vscode.ConfigurationTarget.Global;
+        let saveFolderUri = null;
+        let saveLabel = 'Global settings';
+
+        if (wsFolders.length === 1) {
+            saveTarget = vscode.ConfigurationTarget.WorkspaceFolder;
+            saveFolderUri = wsFolders[0].uri;
+            saveLabel = `.vscode/settings.json (${wsFolders[0].name})`;
+        } else if (wsFolders.length > 1) {
+            const picked = await vscode.window.showQuickPick(
+                wsFolders.map(f => ({ label: f.name, description: f.uri.fsPath, uri: f.uri })),
+                { title: 'Save scopes to which workspace folder?' }
+            );
+            if (!picked) return;
+            saveTarget = vscode.ConfigurationTarget.WorkspaceFolder;
+            saveFolderUri = picked.uri;
+            saveLabel = `.vscode/settings.json (${picked.label})`;
+        }
+
+        async function saveScopes(scopes) {
+            const config = saveFolderUri
+                ? vscode.workspace.getConfiguration('jsqlSyntax', saveFolderUri)
+                : vscode.workspace.getConfiguration('jsqlSyntax');
+            await config.update('scopes', scopes, saveTarget);
+            scheduleSchemaRefresh();
+        }
+
+        function getCurrentScopes() {
+            const readUri = saveFolderUri
+                ? vscode.Uri.joinPath(saveFolderUri, '.jsql-scope-placeholder')
+                : null;
+            const config = readUri
+                ? vscode.workspace.getConfiguration('jsqlSyntax', readUri)
+                : vscode.workspace.getConfiguration('jsqlSyntax');
+            const configured = config.get('scopes', []);
+            if (!Array.isArray(configured)) return [];
+            return configured.filter(s => s && typeof s.prefix === 'string' && Array.isArray(s.files));
+        }
+
+        async function mainMenu() {
+            const scopes = getCurrentScopes();
+
+            const items = [
+                { label: '$(add) Add new scope', action: 'add' },
+                ...scopes.map((s, i) => ({
+                    label: `$(folder) ${s.prefix}`,
+                    description: s.files.join(', '),
+                    action: 'edit',
+                    index: i,
+                })),
+            ];
+
+            if (scopes.length) {
+                items.push({ label: '$(trash) Remove a scope', action: 'remove' });
+            }
+
+            const pick = await vscode.window.showQuickPick(items, {
+                title: `JSql: Schema Scopes — ${saveLabel}`,
+                placeHolder: scopes.length
+                    ? 'Select a scope to edit, or add a new one'
+                    : 'No scopes configured — add one to get started',
+            });
+            if (!pick) return;
+
+            const currentScopes = getCurrentScopes();
+            if (pick.action === 'add') {
+                await addOrEditScope(currentScopes, null, null);
+            } else if (pick.action === 'edit') {
+                await addOrEditScope(currentScopes, pick.index, currentScopes[pick.index]);
+            } else if (pick.action === 'remove') {
+                await removeScope(currentScopes);
+            }
+        }
+
+        async function addOrEditScope(scopes, editIndex, existing) {
+            const isEdit = editIndex !== null;
+
+            const prefix = await vscode.window.showInputBox({
+                title: isEdit ? `Edit scope: ${existing.prefix}` : 'Add scope — Step 1/2',
+                prompt: 'Directory prefix for files that should use this scope. Use **/name to match anywhere in the tree.',
+                placeHolder: 'e.g. src/applms  or  **/applms',
+                value: existing?.prefix ?? '',
+                validateInput(v) {
+                    if (!v.trim()) return 'Prefix cannot be empty';
+                    if (v.trim().startsWith('/')) return 'Use a relative path, not an absolute path';
+                    return null;
+                },
+            });
+            if (prefix === undefined) return;
+
+            const filesInput = await vscode.window.showInputBox({
+                title: isEdit ? `Edit scope: ${existing.prefix}` : 'Add scope — Step 2/2',
+                prompt: 'Glob patterns for table definition files (comma-separated). Supports ** wildcards.',
+                placeHolder: 'e.g. liblms/**/tables.py, liblms/**/models.py',
+                value: existing?.files.join(', ') ?? '',
+                validateInput(v) {
+                    if (!v.trim()) return 'At least one file pattern is required';
+                    return null;
+                },
+            });
+            if (filesInput === undefined) return;
+
+            const files = filesInput.split(',').map(f => f.trim()).filter(Boolean);
+            const newScope = { prefix: prefix.trim(), files };
+
+            const updated = [...scopes];
+            if (isEdit) {
+                updated[editIndex] = newScope;
+            } else {
+                updated.push(newScope);
+            }
+
+            await saveScopes(updated);
+            vscode.window.showInformationMessage(`JSql: Scope "${newScope.prefix}" saved to ${saveLabel}.`);
+        }
+
+        async function removeScope(scopes) {
+            const pick = await vscode.window.showQuickPick(
+                scopes.map((s, i) => ({
+                    label: `$(folder) ${s.prefix}`,
+                    description: s.files.join(', '),
+                    index: i,
+                })),
+                { title: 'JSql: Remove scope', placeHolder: 'Select a scope to remove' }
+            );
+            if (!pick) return;
+
+            const confirmed = await vscode.window.showWarningMessage(
+                `Remove scope "${scopes[pick.index].prefix}"?`,
+                { modal: true }, 'Remove'
+            );
+            if (confirmed !== 'Remove') return;
+
+            const updated = scopes.filter((_, i) => i !== pick.index);
+            await saveScopes(updated);
+            vscode.window.showInformationMessage(`JSql: Scope "${scopes[pick.index].prefix}" removed.`);
+        }
+
+        await mainMenu();
     }, null, context.subscriptions);
 
     vscode.commands.registerCommand('jsqlSyntax.selectTheme', () => {

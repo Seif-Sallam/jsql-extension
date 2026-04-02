@@ -26,6 +26,10 @@
       {
         "command": "jsqlSyntax.manageScopes",
         "title": "JSql: Manage Schema Scopes"
+      },
+      {
+        "command": "jsqlSyntax.scopeDebug",
+        "title": "JSql: Debug Scope"
       }
     ],
     "configuration": {
@@ -44,6 +48,7 @@
         },
         "jsqlSyntax.tableDefinitionFiles": {
           "type": "array",
+          "scope": "resource",
           "default": [],
           "items": {
             "type": "string"
@@ -52,6 +57,7 @@
         },
         "jsqlSyntax.scopes": {
           "type": "array",
+          "scope": "resource",
           "default": [],
           "description": "Per-directory schema scopes. Each scope maps a path prefix to a set of table definition file globs. Files under the prefix will only see tables from that scope's files. Unscoped files fall back to tableDefinitionFiles.",
           "items": {
@@ -72,6 +78,7 @@
         },
         "jsqlSyntax.semanticWarnings": {
           "type": "boolean",
+          "scope": "resource",
           "default": true,
           "description": "Enable schema-aware SQL warnings for unknown tables and invalid qualified columns using the loaded table definition files."
         }
