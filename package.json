@@ -34,6 +34,49 @@
       {
         "command": "jsqlSyntax.addToScope",
         "title": "JSql: Add to Schema Scope"
+      },
+      {
+        "command": "jsqlSyntax.openWelcome",
+        "title": "JSql: Welcome / Feature Tour"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "jsqlGettingStarted",
+        "title": "Get Started with JSql Syntax",
+        "description": "SQL highlighting, schema intelligence, and formatting for Python — in 5 steps.",
+        "steps": [
+          {
+            "id": "highlight",
+            "title": "Instant SQL syntax highlighting",
+            "description": "JSql highlights keywords, functions, tables, columns, aliases, strings, and booleans — all inside triple-quoted Python strings. Use ``--bq`` or ``--spanner`` for BigQuery/Spanner dialect.\n\n[Choose a Theme](command:jsqlSyntax.selectTheme)",
+            "media": { "image": "media/step-highlight.svg", "altText": "SQL syntax highlighting with colored tokens" }
+          },
+          {
+            "id": "schema",
+            "title": "Register your schema sources",
+            "description": "Point JSql at your SQLAlchemy model files. It parses ``__tablename__`` and ``sa.Column`` definitions to power coloring, warnings, hover docs, and completions.\n\n[Add Schema Source](command:jsqlSyntax.manageScopes)",
+            "media": { "image": "media/step-schema.svg", "altText": "Schema source registration flow" }
+          },
+          {
+            "id": "scopes",
+            "title": "Map directories to schema sources",
+            "description": "In a monorepo, different services use different tables. Map directory prefixes to schema sources so each service only sees its own tables.\n\n[Manage Scopes](command:jsqlSyntax.manageScopes)",
+            "media": { "image": "media/step-scopes.svg", "altText": "Directory prefix to schema source mapping" }
+          },
+          {
+            "id": "format",
+            "title": "Format SQL with one command",
+            "description": "Place your cursor inside any SQL triple-quoted block and run Format SQL. JSql reformats keywords, indents clauses, expands SELECT columns, and preserves all Jinja templates.\n\n[Format SQL](command:jsqlSyntax.formatSQL)",
+            "media": { "image": "media/step-format.svg", "altText": "Before and after SQL formatting" }
+          },
+          {
+            "id": "navigate",
+            "title": "Navigate and rename SQL symbols",
+            "description": "**F12** on a table name jumps to its model definition. **F12** on a column jumps to the FROM/JOIN. **F2** renames an alias throughout the block. Type ``alias.`` for column completions.\n\n[Open Feature Tour](command:jsqlSyntax.openWelcome)",
+            "media": { "image": "media/step-navigate.svg", "altText": "Navigation, hover, rename, and completions" }
+          }
+        ]
       }
     ],
     "menus": {
@@ -96,6 +139,11 @@
             },
             "required": ["prefix", "source"]
           }
+        },
+        "jsqlSyntax.showWelcomeOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the JSql welcome page when the extension first activates."
         },
         "jsqlSyntax.semanticWarnings": {
           "type": "boolean",

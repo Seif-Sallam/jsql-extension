@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+  <rect width="800" height="400" fill="#282a36"/>
+  <text x="400" y="38" font-family="sans-serif" font-size="18" fill="#f8f8f2" text-anchor="middle" font-weight="bold">SQL Formatter</text>
+  <text x="400" y="60" font-family="sans-serif" font-size="13" fill="#6272a4" text-anchor="middle">Reformats SQL inside triple-quoted strings, preserving Jinja templates</text>
+
+  <!-- Before panel -->
+  <rect x="30" y="80" width="330" height="240" rx="8" fill="#1e1f29" stroke="#ff5555" stroke-width="1.5"/>
+  <rect x="30" y="80" width="330" height="28" rx="8" fill="#44475a"/>
+  <rect x="30" y="100" width="330" height="8" fill="#44475a"/>
+  <text x="195" y="99" font-family="sans-serif" font-size="12" fill="#ff5555" text-anchor="middle">Before</text>
+  <text x="48" y="128" font-family="monospace" font-size="12" fill="#f8f8f2">select id_user,name,</text>
+  <text x="48" y="148" font-family="monospace" font-size="12" fill="#f8f8f2">email from user where</text>
+  <text x="48" y="168" font-family="monospace" font-size="12" fill="#f8f8f2">is_active=1 and</text>
+  <text x="48" y="188" font-family="monospace" font-size="12" fill="#f8f8f2">id_role in (select</text>
+  <text x="48" y="208" font-family="monospace" font-size="12" fill="#f8f8f2">id_role from role where</text>
+  <text x="48" y="228" font-family="monospace" font-size="12" fill="#f8f8f2">{% if code %}</text>
+  <text x="48" y="248" font-family="monospace" font-size="12" fill="#f8f8f2">code=:code</text>
+  <text x="48" y="268" font-family="monospace" font-size="12" fill="#f8f8f2">{% endif %})</text>
+  <text x="48" y="288" font-family="monospace" font-size="12" fill="#f8f8f2">order by name asc</text>
+
+  <!-- Arrow -->
+  <text x="400" y="186" font-family="sans-serif" font-size="28" fill="#50fa7b" text-anchor="middle">→</text>
+  <text x="400" y="210" font-family="sans-serif" font-size="10" fill="#50fa7b" text-anchor="middle">⌘⇧P</text>
+  <text x="400" y="224" font-family="sans-serif" font-size="10" fill="#6272a4" text-anchor="middle">JSql: Format SQL</text>
+
+  <!-- After panel -->
+  <rect x="440" y="80" width="330" height="240" rx="8" fill="#1e1f29" stroke="#50fa7b" stroke-width="1.5"/>
+  <rect x="440" y="80" width="330" height="28" rx="8" fill="#44475a"/>
+  <rect x="440" y="100" width="330" height="8" fill="#44475a"/>
+  <text x="605" y="99" font-family="sans-serif" font-size="12" fill="#50fa7b" text-anchor="middle">After</text>
+  <text x="458" y="128" font-family="monospace" font-size="12" fill="#8be9fd" font-weight="bold">SELECT</text>
+  <text x="458" y="148" font-family="monospace" font-size="12" fill="#f8f8f2">    id_user,</text>
+  <text x="458" y="168" font-family="monospace" font-size="12" fill="#f8f8f2">    name,</text>
+  <text x="458" y="188" font-family="monospace" font-size="12" fill="#f8f8f2">    email</text>
+  <text x="458" y="208" font-family="monospace" font-size="12" fill="#8be9fd" font-weight="bold">FROM </text><text x="514" y="208" font-family="monospace" font-size="12" fill="#f4c56e">user</text>
+  <text x="458" y="228" font-family="monospace" font-size="12" fill="#8be9fd" font-weight="bold">WHERE </text><text x="523" y="228" font-family="monospace" font-size="12" fill="#f8f8f2">is_active = 1</text>
+  <text x="458" y="248" font-family="monospace" font-size="12" fill="#f8f8f2">    </text><text x="476" y="248" font-family="monospace" font-size="12" fill="#8be9fd" font-weight="bold">AND </text><text x="514" y="248" font-family="monospace" font-size="12" fill="#f8f8f2">id_role </text><text x="578" y="248" font-family="monospace" font-size="12" fill="#8be9fd" font-weight="bold">IN</text>
+  <text x="458" y="268" font-family="monospace" font-size="12" fill="#bd93f9">{% if code %}</text>
+  <text x="476" y="288" font-family="monospace" font-size="12" fill="#f8f8f2">    AND code = :code</text>
+
+  <!-- Bottom note -->
+  <text x="400" y="355" font-family="sans-serif" font-size="12" fill="#6272a4" text-anchor="middle">Jinja tags preserved · Strings normalized · CASE, CTEs, subqueries auto-indented</text>
+</svg>

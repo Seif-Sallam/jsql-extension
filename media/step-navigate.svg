@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+  <rect width="800" height="400" fill="#282a36"/>
+  <text x="400" y="38" font-family="sans-serif" font-size="18" fill="#f8f8f2" text-anchor="middle" font-weight="bold">Navigation &amp; Intelligence</text>
+  <text x="400" y="60" font-family="sans-serif" font-size="13" fill="#6272a4" text-anchor="middle">F12 · Hover · F2 Rename · Column completions</text>
+
+  <!-- Nav item 1: F12 on table -->
+  <rect x="30" y="80" width="360" height="70" rx="6" fill="#1e1f29" stroke="#44475a" stroke-width="1"/>
+  <text x="46" y="104" font-family="sans-serif" font-size="11" fill="#8be9fd" font-weight="bold">F12 on table name</text>
+  <text x="46" y="122" font-family="monospace" font-size="12" fill="#f8f8f2">FROM <tspan fill="#f4c56e" text-decoration="underline">user_contract</tspan> uc</text>
+  <text x="46" y="140" font-family="sans-serif" font-size="11" fill="#6272a4">→ Jumps to __tablename__ in models/tables.py</text>
+
+  <!-- Nav item 2: F12 on column -->
+  <rect x="30" y="164" width="360" height="70" rx="6" fill="#1e1f29" stroke="#44475a" stroke-width="1"/>
+  <text x="46" y="188" font-family="sans-serif" font-size="11" fill="#8be9fd" font-weight="bold">F12 on column (qualified)</text>
+  <text x="46" y="206" font-family="monospace" font-size="12" fill="#f8f8f2"><tspan fill="#5de3c0">uc</tspan>.<tspan fill="#82b1ff" text-decoration="underline">created_at</tspan></text>
+  <text x="46" y="224" font-family="sans-serif" font-size="11" fill="#6272a4">→ Jumps to FROM/JOIN user_contract uc in query</text>
+
+  <!-- Nav item 3: F12 on alias -->
+  <rect x="30" y="248" width="360" height="70" rx="6" fill="#1e1f29" stroke="#44475a" stroke-width="1"/>
+  <text x="46" y="272" font-family="sans-serif" font-size="11" fill="#8be9fd" font-weight="bold">F12 on alias</text>
+  <text x="46" y="290" font-family="monospace" font-size="12" fill="#f8f8f2">WHERE <tspan fill="#5de3c0" text-decoration="underline">uc</tspan>.is_active = 1</text>
+  <text x="46" y="308" font-family="sans-serif" font-size="11" fill="#6272a4">→ Jumps to JOIN user_contract uc definition</text>
+
+  <!-- Divider -->
+  <line x1="410" y1="80" x2="410" y2="330" stroke="#44475a" stroke-width="1" stroke-dasharray="4,4"/>
+
+  <!-- Hover -->
+  <rect x="425" y="80" width="345" height="90" rx="6" fill="#1e1f29" stroke="#44475a" stroke-width="1"/>
+  <text x="441" y="104" font-family="sans-serif" font-size="11" fill="#8be9fd" font-weight="bold">Hover on table or column</text>
+  <rect x="441" y="112" width="310" height="50" rx="4" fill="#44475a"/>
+  <text x="455" y="130" font-family="monospace" font-size="11" fill="#f4c56e" font-weight="bold">user_contract</text><text x="568" y="130" font-family="sans-serif" font-size="10" fill="#6272a4"> (table)</text>
+  <text x="455" y="148" font-family="monospace" font-size="10" fill="#82b1ff">id_user_contract</text><text x="590" y="148" font-family="monospace" font-size="10" fill="#6272a4">  INT</text>
+
+  <!-- Rename -->
+  <rect x="425" y="184" width="345" height="70" rx="6" fill="#1e1f29" stroke="#44475a" stroke-width="1"/>
+  <text x="441" y="208" font-family="sans-serif" font-size="11" fill="#8be9fd" font-weight="bold">F2 Rename alias</text>
+  <text x="441" y="226" font-family="monospace" font-size="11" fill="#f8f8f2">Rename <tspan fill="#5de3c0">uc</tspan> → <tspan fill="#5de3c0">contract</tspan> everywhere in block</text>
+  <text x="441" y="244" font-family="sans-serif" font-size="10" fill="#6272a4">Works on table aliases and column aliases</text>
+
+  <!-- Completions -->
+  <rect x="425" y="268" width="345" height="70" rx="6" fill="#1e1f29" stroke="#44475a" stroke-width="1"/>
+  <text x="441" y="292" font-family="sans-serif" font-size="11" fill="#8be9fd" font-weight="bold">Column completions after "."</text>
+  <text x="441" y="310" font-family="monospace" font-size="11" fill="#5de3c0">uc.</text>
+  <rect x="465" y="297" width="180" height="36" rx="3" fill="#44475a"/>
+  <text x="476" y="312" font-family="monospace" font-size="10" fill="#82b1ff">id_user_contract</text>
+  <text x="476" y="326" font-family="monospace" font-size="10" fill="#82b1ff">id_user</text>
+  <text x="640" y="312" font-family="monospace" font-size="10" fill="#6272a4">INT</text>
+  <text x="640" y="326" font-family="monospace" font-size="10" fill="#6272a4">INT</text>
+</svg>

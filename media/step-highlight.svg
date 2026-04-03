@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+  <rect width="800" height="400" fill="#282a36"/>
+  <!-- Window chrome -->
+  <rect width="800" height="36" fill="#1e1f29"/>
+  <circle cx="16" cy="18" r="6" fill="#ff5555" opacity="0.8"/>
+  <circle cx="34" cy="18" r="6" fill="#ffb86c" opacity="0.8"/>
+  <circle cx="52" cy="18" r="6" fill="#50fa7b" opacity="0.8"/>
+  <text x="400" y="22" font-family="monospace" font-size="12" fill="#6272a4" text-anchor="middle">queries.py</text>
+
+  <!-- Code block -->
+  <text x="60" y="80" font-family="monospace" font-size="15" fill="#6272a4">1</text>
+  <text x="85" y="80" font-family="monospace" font-size="15" fill="#6272a4">sql(ctx.conn, """</text>
+
+  <text x="60" y="110" font-family="monospace" font-size="15" fill="#6272a4">2</text>
+  <text x="85" y="110" font-family="monospace" font-size="15" fill="#8be9fd" font-weight="bold">SELECT</text>
+
+  <text x="60" y="140" font-family="monospace" font-size="15" fill="#6272a4">3</text>
+  <text x="85" y="140" font-family="monospace" font-size="15" fill="#f8f8f2">    </text>
+  <text x="112" y="140" font-family="monospace" font-size="15" fill="#5de3c0">u</text>
+  <text x="122" y="140" font-family="monospace" font-size="15" fill="#f8f8f2">.</text>
+  <text x="130" y="140" font-family="monospace" font-size="15" fill="#82b1ff">name</text>
+  <text x="196" y="140" font-family="monospace" font-size="15" fill="#8be9fd" font-weight="bold"> AS </text>
+  <text x="240" y="140" font-family="monospace" font-size="15" fill="#d4aaff">full_name</text>
+  <text x="330" y="140" font-family="monospace" font-size="15" fill="#f8f8f2">,</text>
+
+  <text x="60" y="170" font-family="monospace" font-size="15" fill="#6272a4">4</text>
+  <text x="85" y="170" font-family="monospace" font-size="15" fill="#ff79c6">    COUNT</text>
+  <text x="173" y="170" font-family="monospace" font-size="15" fill="#f8f8f2">(*)</text>
+  <text x="210" y="170" font-family="monospace" font-size="15" fill="#d4aaff"> total</text>
+
+  <text x="60" y="200" font-family="monospace" font-size="15" fill="#6272a4">5</text>
+  <text x="85" y="200" font-family="monospace" font-size="15" fill="#8be9fd" font-weight="bold">FROM </text>
+  <text x="140" y="200" font-family="monospace" font-size="15" fill="#f4c56e">user</text>
+  <text x="187" y="200" font-family="monospace" font-size="15" fill="#5de3c0"> u</text>
+
+  <text x="60" y="230" font-family="monospace" font-size="15" fill="#6272a4">6</text>
+  <text x="85" y="230" font-family="monospace" font-size="15" fill="#8be9fd" font-weight="bold">WHERE </text>
+  <text x="149" y="230" font-family="monospace" font-size="15" fill="#5de3c0">u</text>
+  <text x="159" y="230" font-family="monospace" font-size="15" fill="#f8f8f2">.</text>
+  <text x="167" y="230" font-family="monospace" font-size="15" fill="#82b1ff">is_active</text>
+  <text x="262" y="230" font-family="monospace" font-size="15" fill="#8be9fd"> = </text>
+  <text x="292" y="230" font-family="monospace" font-size="15" fill="#ff8585" font-weight="bold">TRUE</text>
+
+  <text x="60" y="260" font-family="monospace" font-size="15" fill="#6272a4">7</text>
+  <text x="85" y="260" font-family="monospace" font-size="15" fill="#6272a4">""")</text>
+
+  <!-- Legend -->
+  <rect x="480" y="80" width="280" height="210" rx="8" fill="#44475a" opacity="0.5"/>
+  <text x="620" y="104" font-family="sans-serif" font-size="13" fill="#f8f8f2" text-anchor="middle" font-weight="bold">Token Colors</text>
+  <rect x="500" y="116" width="12" height="12" rx="2" fill="#8be9fd"/>
+  <text x="520" y="127" font-family="sans-serif" font-size="12" fill="#f8f8f2">Keywords (SELECT, FROM…)</text>
+  <rect x="500" y="140" width="12" height="12" rx="2" fill="#ff79c6"/>
+  <text x="520" y="151" font-family="sans-serif" font-size="12" fill="#f8f8f2">Functions (COUNT, MAX…)</text>
+  <rect x="500" y="164" width="12" height="12" rx="2" fill="#f4c56e"/>
+  <text x="520" y="175" font-family="sans-serif" font-size="12" fill="#f8f8f2">Tables</text>
+  <rect x="500" y="188" width="12" height="12" rx="2" fill="#82b1ff"/>
+  <text x="520" y="199" font-family="sans-serif" font-size="12" fill="#f8f8f2">Columns</text>
+  <rect x="500" y="212" width="12" height="12" rx="2" fill="#5de3c0"/>
+  <text x="520" y="223" font-family="sans-serif" font-size="12" fill="#f8f8f2">Table aliases</text>
+  <rect x="500" y="236" width="12" height="12" rx="2" fill="#d4aaff"/>
+  <text x="520" y="247" font-family="sans-serif" font-size="12" fill="#f8f8f2">Column aliases</text>
+  <rect x="500" y="260" width="12" height="12" rx="2" fill="#ff8585"/>
+  <text x="520" y="271" font-family="sans-serif" font-size="12" fill="#f8f8f2">Booleans / NULL</text>
+
+  <!-- Bottom label -->
+  <text x="400" y="370" font-family="sans-serif" font-size="13" fill="#6272a4" text-anchor="middle">Works with MySQL, BigQuery (--bq), and Spanner (--spanner) dialects</text>
+</svg>
