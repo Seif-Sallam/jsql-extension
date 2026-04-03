@@ -2676,6 +2676,26 @@ order by name asc</pre>
         openWelcomePanel();
     }
 
+    context.subscriptions.push(
+        vscode.languages.registerDocumentFormattingEditProvider('python', {
+            provideDocumentFormattingEdits(doc) {
+                const text = doc.getText();
+                const sqlRanges = findSQLRanges(text);
+                const edits = [];
+                for (const sqlRange of sqlRanges) {
+                    const replacement = buildFormattedSQLBlock(text, sqlRange);
+                    const current = text.slice(replacement.start, replacement.end);
+                    if (replacement.formatted === current) continue;
+                    edits.push(vscode.TextEdit.replace(
+                        new vscode.Range(doc.positionAt(replacement.start), doc.positionAt(replacement.end)),
+                        replacement.formatted
+                    ));
+                }
+                return edits;
+            }
+        })
+    );
+
     vscode.commands.registerCommand('jsqlSyntax.formatSQL', () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document.languageId !== 'python') return;
