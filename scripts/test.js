@@ -14,6 +14,7 @@ const {
     findSemanticEntityRanges,
     findSemanticWarnings,
     detectMissingSelectCommas,
+    findSqlWordCompletionContext,
     findTableNameCompletionContext,
     findTableNameCompletions,
     findSqlWordCompletions,
@@ -266,6 +267,30 @@ const completionCases = [
     },
 ];
 
+const wordCompletionContextCases = [
+    {
+        name: 'detects keyword completion prefix after two letters',
+        input: 'SE',
+        cursorOffset: 2,
+        expected: {
+            prefix: 'SE',
+            prefixStart: 0,
+        },
+    },
+    {
+        name: 'ignores qualified column completions for keyword matching',
+        input: 'u.se',
+        cursorOffset: 4,
+        expected: null,
+    },
+    {
+        name: 'ignores named parameters for keyword matching',
+        input: ':se',
+        cursorOffset: 3,
+        expected: null,
+    },
+];
+
 const tableCompletionContextCases = [
     {
         name: 'detects table completion context after FROM',
@@ -317,16 +342,23 @@ const tableCompletionCases = [
         ],
     },
     {
-        name: 'waits until two letters before suggesting schema tables',
-        prefix: 'u',
+        name: 'suggests all schema tables when entering a table reference context',
+        prefix: '',
         metadataFiles: [
             [
                 'class User(Base):',
                 '    __tablename__ = "users"',
                 '    id = sa.Column(sa.Integer)',
+                '',
+                'class AuditLog(Base):',
+                '    __tablename__ = "audit_log"',
+                '    id = sa.Column(sa.Integer)',
             ].join('\n'),
         ],
-        expected: [],
+        expectedIncludes: [
+            { label: 'audit_log', kind: 'table', columnCount: 1 },
+            { label: 'users', kind: 'table', columnCount: 1 },
+        ],
     },
 ];
 
@@ -1095,6 +1127,16 @@ function runCompletionCases() {
     }
 }
 
+function runWordCompletionContextCases() {
+    for (const testCase of wordCompletionContextCases) {
+        assert.strictEqual(
+            JSON.stringify(findSqlWordCompletionContext(testCase.input, testCase.cursorOffset)),
+            JSON.stringify(testCase.expected),
+            `findSqlWordCompletionContext failed: ${testCase.name}`
+        );
+    }
+}
+
 function runTableCompletionContextCases() {
     for (const testCase of tableCompletionContextCases) {
         assert.strictEqual(
@@ -1197,6 +1239,7 @@ function main() {
     runSemanticHighlightCases();
     runWorkspacePatternCases();
     runSemanticWarningCases();
+    runWordCompletionContextCases();
     runCompletionCases();
     runTableCompletionContextCases();
     runTableCompletionCases();
@@ -1205,7 +1248,7 @@ function main() {
     runDuplicateAliasCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

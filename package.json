@@ -30,7 +30,7 @@
       },
       {
         "command": "jsqlSyntax.scopeDebug",
-        "title": "JSql: Debug Scope"
+        "title": "JSql: Debug Scope / Completions"
       },
       {
         "command": "jsqlSyntax.addToScope",

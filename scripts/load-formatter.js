@@ -14,6 +14,7 @@ function loadExtensionInternals() {
         detectDuplicateAliases: diagnostics.detectDuplicateAliases,
         detectMissingSelectCommas: diagnostics.detectMissingSelectCommas,
         detectUnionCommentAdjacency: formatter.detectUnionCommentAdjacency,
+        findSqlWordCompletionContext: completions.findSqlWordCompletionContext,
         findTableNameCompletionContext: completions.findTableNameCompletionContext,
         findTableNameCompletions: completions.findTableNameCompletions,
         findSqlWordCompletions: completions.findSqlWordCompletions,

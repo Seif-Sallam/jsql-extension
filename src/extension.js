@@ -37,6 +37,7 @@ const {
 } = require('./schema/metadata');
 const { ALL_SQL_KEYWORDS, buildOpaqueMask, findClosestKeyword } = require('./sql/shared');
 const {
+    findSqlWordCompletionContext,
     findSqlWordCompletions,
     findTableNameCompletionContext,
     findTableNameCompletions,
@@ -44,15 +45,18 @@ const {
 const { THEMES, buildDecorations, createBracketDecorations } = require('./theme');
 const { createWelcomeHtml } = require('./ui/welcome');
 
-const SQL_COMPLETION_TRIGGER_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('');
+// Only explicit non-alpha trigger chars — letters trigger automatically via quickSuggestions
+const SQL_COMPLETION_TRIGGER_CHARS = [' ', '_'];
 
 function activate(context) {
     const cfg = () => vscode.workspace.getConfiguration('jsqlSyntax');
     let dec = buildDecorations(vscode, cfg().get('theme', 'dracula'));
     let { bracketDec, bracketErrorDec } = createBracketDecorations(vscode);
+    const debugChannel = vscode.window.createOutputChannel('JSql Debug');
 
     const diagnostics = vscode.languages.createDiagnosticCollection('jsqlSyntax');
     context.subscriptions.push(diagnostics);
+    context.subscriptions.push(debugChannel);
     let globalMetadata = createEmptySchemaMetadata();
     let scopedMetadataMap = new Map(); // normalizedPrefix -> schemaMetadata
     let schemaRefreshVersion = 0;
@@ -157,6 +161,120 @@ function activate(context) {
             }
         }
         return best || globalMetadata;
+    }
+
+    function resolveCompletionMetadata(doc) {
+        const primary = resolveMetadata(doc);
+        if (primary.tables.size > 0) return primary;
+
+        const merged = createEmptySchemaMetadata();
+        const seen = new Set();
+
+        const addMetadata = meta => {
+            if (!meta || seen.has(meta)) return;
+            seen.add(meta);
+            mergeSchemaMetadata(merged, meta);
+        };
+
+        addMetadata(globalMetadata);
+        for (const meta of scopedMetadataMap.values()) addMetadata(meta);
+
+        return merged;
+    }
+
+    function getDocumentScopeDebug(doc) {
+        const workspaceFolders = vscode.workspace.workspaceFolders || [];
+        const docFsPath = doc.uri.fsPath.replace(/\\/g, '/');
+
+        for (const wsFolder of workspaceFolders) {
+            const wsPath = wsFolder.uri.fsPath.replace(/\\/g, '/');
+            if (!docFsPath.startsWith(wsPath)) continue;
+
+            const relPath = docFsPath.slice(wsPath.length).replace(/^\//, '');
+            const matchingScopes = [...scopedMetadataMap.entries()]
+                .filter(([prefix]) => pathMatchesPrefix(relPath, prefix))
+                .map(([prefix, meta]) => ({
+                    prefix,
+                    tableCount: meta.tables.size,
+                    sourceUriCount: meta.sourceUris.size,
+                }))
+                .sort((a, b) => b.prefix.length - a.prefix.length);
+
+            return {
+                workspaceFolder: wsFolder.name,
+                relPath,
+                matchingScopes,
+            };
+        }
+
+        return null;
+    }
+
+    function buildCompletionDebugSnapshot(doc, position) {
+        const text = doc.getText();
+        const offset = doc.offsetAt(position);
+        const sqlRanges = findSQLRanges(text);
+        const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end) || null;
+        const resolvedMetadata = resolveMetadata(doc);
+        const completionMetadata = resolveCompletionMetadata(doc);
+        const snapshot = {
+            document: doc.uri.fsPath,
+            languageId: doc.languageId,
+            cursor: {
+                line: position.line + 1,
+                character: position.character + 1,
+                offset,
+            },
+            lineText: doc.lineAt(position.line).text,
+            sqlRangeFound: !!sqlRange,
+            sqlRangeCount: sqlRanges.length,
+            resolvedMetadata: {
+                tableCount: resolvedMetadata.tables.size,
+                sourceUriCount: resolvedMetadata.sourceUris.size,
+            },
+            completionMetadata: {
+                tableCount: completionMetadata.tables.size,
+                sourceUriCount: completionMetadata.sourceUris.size,
+            },
+            globalMetadata: {
+                tableCount: globalMetadata.tables.size,
+                sourceUriCount: globalMetadata.sourceUris.size,
+            },
+            scopedMetadata: [...scopedMetadataMap.entries()].map(([prefix, meta]) => ({
+                prefix,
+                tableCount: meta.tables.size,
+                sourceUriCount: meta.sourceUris.size,
+            })),
+            scopeInfo: getDocumentScopeDebug(doc),
+        };
+
+        if (!sqlRange) return snapshot;
+
+        const content = text.slice(sqlRange.start, sqlRange.end);
+        const localOffset = offset - sqlRange.start;
+        const opaque = buildOpaqueMask(content);
+        const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
+        const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
+
+        snapshot.sqlRange = {
+            start: sqlRange.start,
+            end: sqlRange.end,
+            dialect: sqlRange.dialect,
+            localOffset,
+            textBeforeCursorTail: content.slice(Math.max(0, localOffset - 120), localOffset),
+            textAfterCursorHead: content.slice(localOffset, Math.min(content.length, localOffset + 120)),
+        };
+        snapshot.tableContext = tableContext;
+        snapshot.wordContext = wordContext;
+        snapshot.tableMatches = tableContext
+            ? findTableNameCompletions(tableContext.prefix, completionMetadata).slice(0, 20)
+            : [];
+        snapshot.wordMatches = wordContext
+            ? findSqlWordCompletions(wordContext.prefix).slice(0, 20)
+            : [];
+        snapshot.sampleTables = [...completionMetadata.tables].sort().slice(0, 20);
+
+        return snapshot;
     }
 
     async function loadFilesIntoMetadata(patterns, workspaceFolders, target, seenUris) {
@@ -1102,6 +1220,29 @@ function activate(context) {
         qp.show();
     }, null, context.subscriptions);
 
+    vscode.commands.registerCommand('jsqlSyntax.scopeDebug', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showWarningMessage('JSql: No active editor.');
+            return;
+        }
+
+        const snapshot = buildCompletionDebugSnapshot(editor.document, editor.selection.active);
+        debugChannel.clear();
+        debugChannel.appendLine('JSql debug snapshot');
+        debugChannel.appendLine(`Generated at: ${new Date().toISOString()}`);
+        debugChannel.appendLine('');
+        debugChannel.appendLine(JSON.stringify(snapshot, null, 2));
+        debugChannel.show(true);
+
+        if (snapshot.sqlRangeFound) {
+            await vscode.commands.executeCommand('editor.action.triggerSuggest');
+            vscode.window.showInformationMessage('JSql: Debug snapshot written to the "JSql Debug" output channel.');
+        } else {
+            vscode.window.showInformationMessage('JSql: Debug snapshot written to the "JSql Debug" output channel. Cursor is not inside a detected SQL block.');
+        }
+    }, null, context.subscriptions);
+
     vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('jsqlSyntax.theme')) {
             Object.values(dec).forEach(d => d.dispose());
@@ -1127,9 +1268,45 @@ function activate(context) {
     vscode.window.onDidChangeTextEditorSelection(({ textEditor }) => {
         applyDecorations(textEditor);
     }, null, context.subscriptions);
-    vscode.workspace.onDidChangeTextDocument(({ document }) => {
+    vscode.workspace.onDidChangeTextDocument(event => {
+        const { document, contentChanges } = event;
         const editor = vscode.window.visibleTextEditors.find(e => e.document === document);
         if (editor) applyDecorations(editor);
+
+        const activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor || activeEditor.document !== document || document.languageId !== 'python') return;
+        if (contentChanges.length !== 1) return;
+
+        const change = contentChanges[0];
+        if (change.rangeLength !== 0 || change.text.length !== 1) return;
+        if (!/[A-Za-z_\s]/.test(change.text)) return;
+
+        const offset = change.rangeOffset + change.text.length;
+        const text = document.getText();
+        const sqlRange = findSQLRanges(text).find(r => r.start <= offset && offset <= r.end);
+        if (!sqlRange) return;
+
+        const content = text.slice(sqlRange.start, sqlRange.end);
+        const localOffset = offset - sqlRange.start;
+        const opaque = buildOpaqueMask(content);
+        const schemaMetadata = resolveCompletionMetadata(document);
+        const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
+
+        let shouldTriggerSuggest = false;
+        if (tableContext) {
+            shouldTriggerSuggest = findTableNameCompletions(tableContext.prefix, schemaMetadata).length > 0;
+        } else {
+            const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
+            shouldTriggerSuggest = !!wordContext && findSqlWordCompletions(wordContext.prefix).length > 0;
+        }
+
+        if (!shouldTriggerSuggest) return;
+
+        setTimeout(() => {
+            const currentEditor = vscode.window.activeTextEditor;
+            if (!currentEditor || currentEditor.document !== document) return;
+            vscode.commands.executeCommand('editor.action.triggerSuggest');
+        }, 25);
     }, null, context.subscriptions);
     vscode.workspace.onDidSaveTextDocument(document => {
         if (document.languageId !== 'python') return;
@@ -1140,7 +1317,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerDefinitionProvider('python', {
             provideDefinition(doc, position) {
-                const schemaMetadata = resolveMetadata(doc);
+                const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -1481,20 +1658,13 @@ function activate(context) {
                     });
                 }
 
-                const prefixMatch = /[A-Za-z_][A-Za-z0-9_]*$/.exec(content.slice(0, localOffset));
-                if (!prefixMatch) return null;
+                const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
+                if (!wordContext) return null;
 
-                const prefix = prefixMatch[0];
-                const prefixStart = localOffset - prefix.length;
-                const charBeforePrefix = content[prefixStart - 1];
-                if (charBeforePrefix === '.' || charBeforePrefix === ':') return null;
-
-                if (rangeOverlapsOpaque(opaque, prefixStart, Math.max(prefixStart + 1, localOffset))) return null;
-
-                const matches = findSqlWordCompletions(prefix);
+                const matches = findSqlWordCompletions(wordContext.prefix);
                 if (!matches.length) return null;
 
-                const prefixStartPos = doc.positionAt(sqlRange.start + prefixStart);
+                const prefixStartPos = doc.positionAt(sqlRange.start + wordContext.prefixStart);
                 const wordPosition = position.character > 0 ? position.translate(0, -1) : position;
                 const wordRange = doc.getWordRangeAtPosition(wordPosition, /[A-Za-z_][A-Za-z0-9_]*/);
                 const replaceRange = wordRange && !wordRange.start.isAfter(position)

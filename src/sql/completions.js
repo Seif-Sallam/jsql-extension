@@ -26,6 +26,25 @@ function findSqlWordCompletions(prefix) {
         }));
 }
 
+function findSqlWordCompletionContext(sql, cursorOffset, opaque = buildOpaqueMask(sql)) {
+    if (typeof sql !== 'string') return null;
+    if (cursorOffset < 0 || cursorOffset > sql.length) return null;
+
+    const prefixMatch = /[A-Za-z_][A-Za-z0-9_]*$/.exec(sql.slice(0, cursorOffset));
+    if (!prefixMatch) return null;
+
+    const prefix = prefixMatch[0];
+    const prefixStart = cursorOffset - prefix.length;
+    const charBeforePrefix = sql[prefixStart - 1];
+    if (charBeforePrefix === '.' || charBeforePrefix === ':') return null;
+    if (overlapsOpaque(opaque, prefixStart, Math.max(prefixStart + 1, cursorOffset))) return null;
+
+    return {
+        prefix,
+        prefixStart,
+    };
+}
+
 function findTableNameCompletionContext(sql, cursorOffset, opaque = buildOpaqueMask(sql)) {
     if (typeof sql !== 'string') return null;
     if (cursorOffset < 0 || cursorOffset > sql.length) return null;
@@ -48,20 +67,42 @@ function findTableNameCompletionContext(sql, cursorOffset, opaque = buildOpaqueM
 
 function findTableNameCompletions(prefix, schemaMetadata) {
     const normalizedPrefix = (prefix || '').trim().toLowerCase();
-    if (normalizedPrefix.length < MIN_SQL_COMPLETION_PREFIX) return [];
-
     const tables = schemaMetadata?.tables ? [...schemaMetadata.tables] : [];
-    return tables
-        .filter(tableName => tableName.startsWith(normalizedPrefix))
-        .sort()
-        .map(tableName => ({
+
+    if (!normalizedPrefix) {
+        return tables.sort().map(tableName => ({
             label: tableName,
             kind: 'table',
             columnCount: schemaMetadata.tableColumns.get(tableName)?.size || 0,
         }));
+    }
+
+    const exact = [];
+    const prefix_ = [];
+    const suffix = [];
+    const contains = [];
+
+    for (const tableName of tables) {
+        if (tableName === normalizedPrefix) {
+            exact.push(tableName);
+        } else if (tableName.startsWith(normalizedPrefix)) {
+            prefix_.push(tableName);
+        } else if (tableName.endsWith(normalizedPrefix)) {
+            suffix.push(tableName);
+        } else if (tableName.includes(normalizedPrefix)) {
+            contains.push(tableName);
+        }
+    }
+
+    return [...exact, ...prefix_.sort(), ...suffix.sort(), ...contains.sort()].map(tableName => ({
+        label: tableName,
+        kind: 'table',
+        columnCount: schemaMetadata.tableColumns.get(tableName)?.size || 0,
+    }));
 }
 
 module.exports = {
+    findSqlWordCompletionContext,
     findTableNameCompletionContext,
     findTableNameCompletions,
     findSqlWordCompletions,
