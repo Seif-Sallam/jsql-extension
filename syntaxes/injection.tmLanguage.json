@@ -1,9 +1,0 @@
-{
-  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "name": "JSql Injection",
-  "scopeName": "inline.sql-jinja.python",
-  "injectionSelector": "L:string.quoted.multi.python",
-  "patterns": [
-    { "include": "source.sql-jinja" }
-  ]
-}
