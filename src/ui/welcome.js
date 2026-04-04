@@ -94,8 +94,8 @@ function createWelcomeHtml(nonce) {
 </div>
 
 <div class="actions">
-  <button class="btn btn-primary" data-command="jsqlSyntax.discoverSchemaSources">🔍 Discover Schema Sources</button>
-  <button class="btn btn-secondary" data-command="jsqlSyntax.manageScopes">⚙ Manage Scopes</button>
+  <button class="btn btn-primary" data-command="jsqlSyntax.discoverSchemaSources">🔍 Auto-Discover Schemas</button>
+  <button class="btn btn-secondary" data-command="jsqlSyntax.manageScopes">⚙ Manual Mapping</button>
   <button class="btn btn-secondary" data-command="jsqlSyntax.selectTheme">🎨 Select Theme</button>
   <button class="btn btn-secondary" data-command="jsqlSyntax.formatSQL">⌥⇧F Format SQL</button>
 </div>
@@ -130,24 +130,70 @@ function createWelcomeHtml(nonce) {
 </div>
 
 <div class="section">
-  <h2>Schema Intelligence</h2>
-  <p class="subtitle">Load your SQLAlchemy model files as named schema sources. JSql parses table and column definitions and uses them everywhere.</p>
+  <h2>Schema Setup</h2>
+  <p class="subtitle">JSql reads your SQLAlchemy model files to power coloring, completions, hover docs, warnings, and navigation. Two ways to set it up:</p>
+
+  <!-- Path A: Auto-discover -->
+  <div class="card" style="margin-bottom:16px; border-color: #5de3c0;">
+    <h3 style="font-size:15px; color:#5de3c0;">⚡ Path A — Auto-discover (recommended)</h3>
+    <p style="margin-bottom:14px;">Run <strong>Auto-Discover Schemas</strong> once. JSql scans your repo for files with SQLAlchemy model definitions, validates each one, and suggests prefix mappings automatically.</p>
+    <div style="display:flex; flex-direction:column; gap:8px; font-size:13px; padding-left:12px; border-left: 2px solid #44475a;">
+      <div><span style="color:#5de3c0; font-weight:600;">1.</span> Finds all <code>tables.py</code> files (or your glob) that contain <code>__tablename__</code> definitions</div>
+      <div><span style="color:#5de3c0; font-weight:600;">2.</span> You pick which ones to register — each becomes a named schema source</div>
+      <div><span style="color:#5de3c0; font-weight:600;">3.</span> JSql auto-suggests prefix mappings based on folder naming — e.g. <code>liblms/</code> → also map <code>**/applms</code></div>
+      <div><span style="color:#5de3c0; font-weight:600;">4.</span> Optionally scans for gateway directories (<code>gateway/lastmile</code>, <code>gateway_lastmile</code>) and suggests specific overrides</div>
+    </div>
+    <div style="margin-top:14px;">
+      <button class="btn btn-primary" data-command="jsqlSyntax.discoverSchemaSources" style="font-size:12px; padding:6px 14px;">🔍 Run Auto-Discover</button>
+    </div>
+  </div>
+
+  <!-- Path B: Manual -->
+  <div class="card" style="border-color: #6272a4;">
+    <h3 style="font-size:15px; color:#bd93f9;">🔧 Path B — Manual mapping</h3>
+    <p style="margin-bottom:14px;">Full control over exactly which files and directories are linked. Two independent concepts:</p>
+    <div class="two-col" style="gap:12px;">
+      <div style="background: var(--code-bg); border-radius:6px; padding:12px;">
+        <div style="font-size:12px; color:#f4c56e; font-weight:600; margin-bottom:6px;">Schema Sources</div>
+        <div style="font-size:12px; color:var(--muted); line-height:1.6;">Named sets of model files.<br>
+          <code style="color:#f8f8f2;">liblms → liblms/**/tables.py</code><br>
+          One source, many prefixes can share it.</div>
+      </div>
+      <div style="background: var(--code-bg); border-radius:6px; padding:12px;">
+        <div style="font-size:12px; color:#82b1ff; font-weight:600; margin-bottom:6px;">Prefix Mappings</div>
+        <div style="font-size:12px; color:var(--muted); line-height:1.6;">Which directories use which source.<br>
+          <code style="color:#f8f8f2;">**/applms → liblms</code><br>
+          More specific prefixes always win.</div>
+      </div>
+    </div>
+    <p style="margin-top:12px; font-size:12px; color:var(--muted);">
+      Right-click any file or folder in the Explorer → <strong>JSql: Add to Schema Scope</strong> for quick setup without the command palette.
+    </p>
+    <div style="margin-top:12px;">
+      <button class="btn btn-secondary" data-command="jsqlSyntax.manageScopes" style="font-size:12px; padding:6px 14px;">⚙ Open Manual Mapping</button>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>What Schema Powers</h2>
+  <p class="subtitle">Once your schema is loaded, every SQL block in the repo gets these features.</p>
   <div class="grid">
     <div class="card">
-      <h3>🏷 Named sources <span class="tag">schemaSources</span></h3>
-      <p>Give a name to a set of model files, e.g. <em>"liblms" → liblms/**/tables.py</em>. One source can be reused by many scopes.</p>
-    </div>
-    <div class="card">
-      <h3>📁 Prefix mappings <span class="tag">prefixMappings</span></h3>
-      <p>Map a directory prefix to a source name. Files under <em>src/applms</em> only see the <em>liblms</em> tables — no cross-service noise.</p>
-    </div>
-    <div class="card">
-      <h3>⚠️ Semantic warnings</h3>
-      <p>Unknown table names, invalid qualified columns, ambiguous unqualified columns, and duplicate aliases are flagged in real time.</p>
+      <h3>🎨 Semantic coloring</h3>
+      <p>Table names, column names, and aliases get distinct colors based on what they actually are — not just their position in the query.</p>
     </div>
     <div class="card">
       <h3>💬 Hover documentation</h3>
-      <p>Hover over a table to see all its columns and types. Hover over a column to see which table it belongs to and its SQL type.</p>
+      <p>Hover a table → see all columns and types. Hover a qualified column like <code>uc.created_at</code> → see the exact type from that table.</p>
+    </div>
+    <div class="card">
+      <h3>⌨️ Column completions</h3>
+      <p>Type <code>uc.</code> to get a dropdown of every column on <code>user_contract</code> with its SQL type — resolved from the alias in the query.</p>
+    </div>
+    <div class="card">
+      <h3>⚠️ Semantic warnings</h3>
+      <p>Unknown tables, invalid qualified columns, and ambiguous unqualified columns are flagged in real time with did-you-mean suggestions.</p>
     </div>
   </div>
 </div>

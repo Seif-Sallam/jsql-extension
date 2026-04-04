@@ -36,7 +36,11 @@ const {
     parseTableDefinitionFile,
 } = require('./schema/metadata');
 const { ALL_SQL_KEYWORDS, buildOpaqueMask, findClosestKeyword } = require('./sql/shared');
-const { findSqlWordCompletions } = require('./sql/completions');
+const {
+    findSqlWordCompletions,
+    findTableNameCompletionContext,
+    findTableNameCompletions,
+} = require('./sql/completions');
 const { THEMES, buildDecorations, createBracketDecorations } = require('./theme');
 const { createWelcomeHtml } = require('./ui/welcome');
 
@@ -874,22 +878,40 @@ function activate(context) {
             const allSources = readSchemaSources(wsFolder);
             const sourceNames = Object.keys(allSources);
 
-            // Find files nested under any gateway-like directory
-            const gatewayFiles = await vscode.workspace.findFiles(
+            // Find files under gateway-like dirs — two styles:
+            //   gateway/lastmile/file.py  (subdirectory style)
+            //   gateway_lastmile/file.py  (underscore-joined folder name)
+            const gatewayGlobs = [
                 `**/{${GATEWAY_NAMES.join(',')}}/**/*.py`,
-                '{**/node_modules/**,**/.git/**}'
-            );
+                `**/{${GATEWAY_NAMES.map(g => g + '_*').join(',')}}/**/*.py`,
+            ];
+            const gatewayFiles = (await Promise.all(
+                gatewayGlobs.map(g => vscode.workspace.findFiles(g, '{**/node_modules/**,**/.git/**}'))
+            )).flat();
 
-            // Extract service names from paths like .../gateway/lastmile/file.py
-            const gatewayServiceMap = new Map(); // serviceName → Set of full prefixes found
-            const gatewayRe = new RegExp(`(?:${GATEWAY_NAMES.join('|')})/([^/]+)/`, 'i');
+            // Extract service name — supports all three styles:
+            //   gateway/lastmile/     → service = lastmile
+            //   gateway_lastmile/     → service = lastmile
+            //   gateway/lms_gateway/  → captured = lms_gateway → strip _gateway → service = lms
+            const gatewaySuffixRe = new RegExp(`_(?:${GATEWAY_NAMES.join('|')})$`, 'i');
+            const gatewayServiceMap = new Map();
+            const slashRe = new RegExp(`(?:${GATEWAY_NAMES.join('|')})/([^/]+)/`, 'i');
+            const underRe = new RegExp(`(?:${GATEWAY_NAMES.join('|')})_([^/]+?)(?:/|$)`, 'i');
             for (const uri of gatewayFiles) {
                 const rel = toRelPath(uri);
-                const m = gatewayRe.exec(rel);
-                if (!m) continue;
-                const service = m[1].toLowerCase();
-                // Extract the path up to and including gateway/service
-                const prefixEnd = m.index + m[0].length - 1; // don't include trailing /
+                const ms = slashRe.exec(rel);
+                const mu = underRe.exec(rel);
+                let service, prefixEnd;
+                if (ms) {
+                    service = ms[1].toLowerCase();
+                    prefixEnd = ms.index + ms[0].length - 1;
+                } else if (mu) {
+                    service = mu[1].toLowerCase();
+                    prefixEnd = mu.index + mu[0].replace(/\/$/, '').length;
+                } else { continue; }
+                // Strip trailing _gateway/_portal/etc. from subfolder names like lms_gateway
+                service = service.replace(gatewaySuffixRe, '');
+                if (!service) continue;
                 const prefix = rel.slice(0, prefixEnd);
                 if (!gatewayServiceMap.has(service)) gatewayServiceMap.set(service, new Set());
                 gatewayServiceMap.get(service).add(prefix);
@@ -1425,6 +1447,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider('python', {
             provideCompletionItems(doc, position) {
+                const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -1433,6 +1456,31 @@ function activate(context) {
 
                 const content = text.slice(sqlRange.start, sqlRange.end);
                 const localOffset = offset - sqlRange.start;
+                const opaque = buildOpaqueMask(content);
+                const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
+                if (tableContext) {
+                    const matches = findTableNameCompletions(tableContext.prefix, schemaMetadata);
+                    if (!matches.length) return null;
+
+                    const replaceStart = doc.positionAt(sqlRange.start + tableContext.prefixStart);
+                    const replaceRange = new vscode.Range(replaceStart, position);
+                    return matches.map(match => {
+                        const item = new vscode.CompletionItem(match.label, vscode.CompletionItemKind.Class);
+                        item.insertText = match.label;
+                        item.range = replaceRange;
+                        item.detail = match.columnCount
+                            ? `Known schema table (${match.columnCount} columns)`
+                            : 'Known schema table';
+                        item.documentation = new vscode.MarkdownString(
+                            match.columnCount
+                                ? `Schema table \`${match.label}\` with ${match.columnCount} columns`
+                                : `Schema table \`${match.label}\``
+                        );
+                        item.sortText = `0_${match.label}`;
+                        return item;
+                    });
+                }
+
                 const prefixMatch = /[A-Za-z_][A-Za-z0-9_]*$/.exec(content.slice(0, localOffset));
                 if (!prefixMatch) return null;
 
@@ -1441,7 +1489,6 @@ function activate(context) {
                 const charBeforePrefix = content[prefixStart - 1];
                 if (charBeforePrefix === '.' || charBeforePrefix === ':') return null;
 
-                const opaque = buildOpaqueMask(content);
                 if (rangeOverlapsOpaque(opaque, prefixStart, Math.max(prefixStart + 1, localOffset))) return null;
 
                 const matches = findSqlWordCompletions(prefix);

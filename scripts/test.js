@@ -14,6 +14,8 @@ const {
     findSemanticEntityRanges,
     findSemanticWarnings,
     detectMissingSelectCommas,
+    findTableNameCompletionContext,
+    findTableNameCompletions,
     findSqlWordCompletions,
     findMatchingBracket,
     findUnmatchedBrackets
@@ -261,6 +263,70 @@ const completionCases = [
             { label: 'COALESCE', kind: 'function' },
             { label: 'CONCAT', kind: 'function' },
         ],
+    },
+];
+
+const tableCompletionContextCases = [
+    {
+        name: 'detects table completion context after FROM',
+        input: 'SELECT * FROM us',
+        cursorOffset: 'SELECT * FROM us'.length,
+        expected: {
+            keyword: 'FROM',
+            prefix: 'us',
+            prefixStart: 'SELECT * FROM '.length,
+        },
+    },
+    {
+        name: 'detects table completion context after DELETE FROM',
+        input: 'DELETE FROM us',
+        cursorOffset: 'DELETE FROM us'.length,
+        expected: {
+            keyword: 'DELETE FROM',
+            prefix: 'us',
+            prefixStart: 'DELETE FROM '.length,
+        },
+    },
+    {
+        name: 'does not detect table completion in select list',
+        input: 'SELECT us FROM users',
+        cursorOffset: 'SELECT us'.length,
+        expected: null,
+    },
+];
+
+const tableCompletionCases = [
+    {
+        name: 'suggests schema tables by prefix',
+        prefix: 'us',
+        metadataFiles: [
+            [
+                'class User(Base):',
+                '    __tablename__ = "users"',
+                '    id = sa.Column(sa.Integer)',
+                '    email = sa.Column(sa.String)',
+                '',
+                'class UserContract(Base):',
+                '    __tablename__ = "user_contract"',
+                '    id = sa.Column(sa.Integer)',
+            ].join('\n'),
+        ],
+        expectedIncludes: [
+            { label: 'user_contract', kind: 'table', columnCount: 1 },
+            { label: 'users', kind: 'table', columnCount: 2 },
+        ],
+    },
+    {
+        name: 'waits until two letters before suggesting schema tables',
+        prefix: 'u',
+        metadataFiles: [
+            [
+                'class User(Base):',
+                '    __tablename__ = "users"',
+                '    id = sa.Column(sa.Integer)',
+            ].join('\n'),
+        ],
+        expected: [],
     },
 ];
 
@@ -1029,6 +1095,46 @@ function runCompletionCases() {
     }
 }
 
+function runTableCompletionContextCases() {
+    for (const testCase of tableCompletionContextCases) {
+        assert.strictEqual(
+            JSON.stringify(findTableNameCompletionContext(testCase.input, testCase.cursorOffset)),
+            JSON.stringify(testCase.expected),
+            `findTableNameCompletionContext failed: ${testCase.name}`
+        );
+    }
+}
+
+function runTableCompletionCases() {
+    for (const testCase of tableCompletionCases) {
+        const metadata = testCase.metadataFiles.reduce((acc, fileText) => {
+            mergeSchemaMetadata(acc, parseTableDefinitionFile(fileText));
+            return acc;
+        }, createEmptySchemaMetadata());
+        const actual = findTableNameCompletions(testCase.prefix, metadata);
+
+        if (testCase.expected) {
+            assert.strictEqual(
+                JSON.stringify(actual),
+                JSON.stringify(testCase.expected),
+                `findTableNameCompletions failed: ${testCase.name}`
+            );
+            continue;
+        }
+
+        for (const expectedItem of testCase.expectedIncludes) {
+            assert.ok(
+                actual.some(item =>
+                    item.label === expectedItem.label &&
+                    item.kind === expectedItem.kind &&
+                    item.columnCount === expectedItem.columnCount
+                ),
+                `findTableNameCompletions failed: ${testCase.name} (missing ${expectedItem.label})`
+            );
+        }
+    }
+}
+
 function runCommaWarningCases() {
     for (const testCase of commaWarningCases) {
         assert.strictEqual(
@@ -1092,12 +1198,14 @@ function main() {
     runWorkspacePatternCases();
     runSemanticWarningCases();
     runCompletionCases();
+    runTableCompletionContextCases();
+    runTableCompletionCases();
     runCommaWarningCases();
     runAmbiguousColumnCases();
     runDuplicateAliasCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + completionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();
