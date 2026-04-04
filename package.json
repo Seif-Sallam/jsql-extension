@@ -7,7 +7,8 @@
   "license": "MIT",
   "scripts": {
     "playground": "node scripts/playground.js",
-    "test": "node scripts/test.js"
+    "test": "node scripts/test.js",
+    "package:vsix": "bash ./scripts/install-extension.sh --package-only --build"
   },
   "engines": { "vscode": "^1.74.0" },
   "categories": ["Programming Languages"],

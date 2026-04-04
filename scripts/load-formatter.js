@@ -1,29 +1,29 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+const formatter = require('../src/sql/formatter');
+const metadata = require('../src/schema/metadata');
+const semantic = require('../src/sql/semantic');
+const diagnostics = require('../src/sql/diagnostics');
 
 function loadExtensionInternals() {
-    const extensionPath = path.resolve(__dirname, '..', 'extension.js');
-    const code = fs.readFileSync(extensionPath, 'utf8');
-    const sandbox = {
-        module: { exports: {} },
-        exports: {},
-        require: (name) => {
-            if (name === 'vscode') return {};
-            return require(name);
-        },
-        console,
+    return {
+        buildFormattedSQLBlock: formatter.buildFormattedSQLBlock,
+        createEmptySchemaMetadata: metadata.createEmptySchemaMetadata,
+        detectAmbiguousColumns: diagnostics.detectAmbiguousColumns,
+        detectDuplicateAliases: diagnostics.detectDuplicateAliases,
+        detectMissingSelectCommas: diagnostics.detectMissingSelectCommas,
+        detectUnionCommentAdjacency: formatter.detectUnionCommentAdjacency,
+        findClosestName: metadata.findClosestName,
+        findMatchingBracket: formatter.findMatchingBracket,
+        findSemanticEntityRanges: semantic.findSemanticEntityRanges,
+        findSemanticWarnings: semantic.findSemanticWarnings,
+        findSQLRanges: formatter.findSQLRanges,
+        findUnmatchedBrackets: formatter.findUnmatchedBrackets,
+        formatSQL: formatter.formatSQL,
+        isWorkspaceRelativeGlobPattern: metadata.isWorkspaceRelativeGlobPattern,
+        mergeSchemaMetadata: metadata.mergeSchemaMetadata,
+        parseTableDefinitionFile: metadata.parseTableDefinitionFile,
     };
-
-    vm.runInNewContext(
-        `${code}\nmodule.exports.__test = { formatSQL, findSQLRanges, buildFormattedSQLBlock, createEmptySchemaMetadata, isWorkspaceRelativeGlobPattern, findClosestName, mergeSchemaMetadata, parseTableDefinitionFile, findSemanticEntityRanges, findSemanticWarnings, detectUnionCommentAdjacency, detectMissingSelectCommas, detectDuplicateAliases, detectAmbiguousColumns, findMatchingBracket, findUnmatchedBrackets };`,
-        sandbox,
-        { filename: extensionPath }
-    );
-
-    return sandbox.module.exports.__test;
 }
 
 module.exports = { loadExtensionInternals };

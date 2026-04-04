@@ -15,16 +15,29 @@ SQL + Jinja2 highlighting, formatting, and keyword diagnostics for **JSql-style 
 
 ## Install (local/dev)
 
-Run this command in a terminal that has the file: `jsql-syntax.vsix`
+Preferred local install flow:
 
 ```bash
-code --install-extension jsql-syntax.vsix
+./scripts/install-extension.sh
 ```
 
-or if you have cursor
+Target one editor only:
 
 ```bash
-cursor --install-extension jsql-syntax.vsix
+./scripts/install-extension.sh vscode
+./scripts/install-extension.sh cursor
+```
+
+Force-update an existing installed extension:
+
+```bash
+./scripts/install-extension.sh both --force
+```
+
+Use a specific prebuilt VSIX artifact:
+
+```bash
+./scripts/install-extension.sh vscode --vsix ./dist/jsql-syntax-0.1.0.vsix
 ```
 
 Reload the window if you haven't already!.
@@ -42,8 +55,12 @@ Use the UI:
 From the repo root:
 
 ```bash
-npx --yes @vscode/vsce@3.3.0 package --out jsql-syntax.vsix --allow-star-activation --allow-missing-repository
+npm run package:vsix
 ```
+
+This produces or resolves a VSIX and prints its path. If there is already a CI-built
+artifact in the repo, the install script can use that without needing npm on the
+target machine.
 
 Then install the generated file in VS Code:
 
