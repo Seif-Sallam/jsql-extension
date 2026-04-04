@@ -199,6 +199,41 @@ function createWelcomeHtml(nonce) {
 </div>
 
 <div class="section">
+  <h2>Completions</h2>
+  <p class="subtitle">Intelligent suggestions as you type — inside any SQL block.</p>
+
+  <div class="two-col" style="gap:16px; margin-bottom:16px;">
+    <div class="card">
+      <h3>📋 Table name completions</h3>
+      <p style="margin-bottom:10px;">Type after <code>FROM</code>, <code>JOIN</code>, <code>INTO</code>, or <code>UPDATE</code> to get suggestions from your loaded schema. Matching works on any part of the name:</p>
+      <pre style="font-size:12px;"><span class="kw">FROM</span> history<span style="color:#50fa7b">|</span>
+<span class="cmt">→ attendance_log_history</span>
+<span class="cmt">→ task_history</span>
+<span class="cmt">→ user_shift_history</span></pre>
+      <p style="font-size:12px; color:var(--muted); margin-top:6px;">Prefix matches rank first, then suffix, then substring — so typing <code>user_c</code> surfaces <code>user_contract</code> before <code>last_user_contract</code>.</p>
+    </div>
+    <div class="card">
+      <h3>🔁 CTE completions</h3>
+      <p style="margin-bottom:10px;">CTEs defined in the current query are suggested first — before schema tables — since they're the most local source:</p>
+      <pre style="font-size:12px;"><span class="kw">WITH</span> seal_check_data <span class="kw">AS</span> (...)
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> seal_<span style="color:#50fa7b">|</span>
+<span class="cmt">→ seal_check_data     CTE (2 cols)</span>
+<span class="cmt">→ seal_check          schema table</span></pre>
+      <p style="font-size:12px; color:var(--muted); margin-top:6px;">CTE column lists (explicit or inferred from SELECT aliases) are also shown in the detail line.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>🔤 SQL keyword &amp; function completions</h3>
+    <p>Type any SQL word to get keyword and function suggestions. Functions like <code>COUNT</code>, <code>COALESCE</code>, <code>DATE_TRUNC</code> are distinguished from structural keywords like <code>SELECT</code>, <code>WHERE</code>.</p>
+    <pre style="font-size:12px; margin-top:8px;"><span class="kw">COUN</span><span style="color:#50fa7b">|</span>  <span class="cmt">→ COUNT  (SQL function)</span>
+<span class="kw">COAL</span><span style="color:#50fa7b">|</span>  <span class="cmt">→ COALESCE  (SQL function)</span>
+<span class="kw">PART</span><span style="color:#50fa7b">|</span>  <span class="cmt">→ PARTITION  (SQL keyword)</span></pre>
+    <p style="font-size:12px; color:var(--muted); margin-top:6px;">BigQuery/Spanner functions (<code>ARRAY_AGG</code>, <code>DATE_TRUNC</code>, <code>FARM_FINGERPRINT</code>…) are included when the block starts with <code>--bq</code> or <code>--spanner</code>.</p>
+  </div>
+</div>
+
+<div class="section">
   <h2>SQL Formatter</h2>
   <p class="subtitle">Place the cursor inside a SQL block and run <strong>JSql: Format SQL</strong>. Jinja templates are preserved exactly.</p>
   <div class="two-col">
