@@ -723,14 +723,41 @@ function activate(context) {
             return uri.fsPath;
         }
 
+        // Filter to files that actually contain SQLAlchemy model definitions
+        const candidates = [];
+        await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: `Validating ${uris.length} file(s) for model definitions…` },
+            async () => {
+                for (const uri of uris) {
+                    try {
+                        const bytes = await vscode.workspace.fs.readFile(uri);
+                        const text = Buffer.from(bytes).toString('utf8');
+                        const fileMeta = parseTableDefinitionFile(text);
+                        if (fileMeta.tables.size > 0) {
+                            candidates.push({ uri, tableCount: fileMeta.tables.size });
+                        }
+                    } catch {
+                        // skip unreadable files
+                    }
+                }
+            }
+        );
+
+        if (!candidates.length) {
+            vscode.window.showInformationMessage(`JSql: No files with SQLAlchemy model definitions found matching "${pattern}".`);
+            return;
+        }
+
         const existing = readSchemaSources(wsFolder);
-        const items = uris
-            .map(uri => {
+        const items = candidates
+            .map(({ uri, tableCount }) => {
                 const relPath = toRelPath(uri);
                 const alreadyRegistered = Object.prototype.hasOwnProperty.call(existing, relPath);
                 return {
                     label: relPath,
-                    description: alreadyRegistered ? '$(check) already registered' : '',
+                    description: alreadyRegistered
+                        ? `$(check) already registered`
+                        : `${tableCount} table${tableCount !== 1 ? 's' : ''}`,
                     picked: !alreadyRegistered,
                     relPath,
                     alreadyRegistered,
@@ -740,7 +767,7 @@ function activate(context) {
 
         const selected = await vscode.window.showQuickPick(items, {
             canPickMany: true,
-            title: `JSql: Discover Schema Sources — ${uris.length} file(s) found`,
+            title: `JSql: Discover Schema Sources — ${candidates.length} model file(s) found`,
             placeHolder: 'Select files to register as schema sources (each file becomes a named source)',
         });
         if (!selected || !selected.length) return;
