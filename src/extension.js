@@ -255,6 +255,8 @@ function activate(context) {
         const opaque = buildOpaqueMask(content);
         const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
         const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
+        const cteNames = findCTENames(content, opaque);
+        const { cteSchema } = findSemanticEntityRanges(content, completionMetadata);
 
         snapshot.sqlRange = {
             start: sqlRange.start,
@@ -267,11 +269,12 @@ function activate(context) {
         snapshot.tableContext = tableContext;
         snapshot.wordContext = wordContext;
         snapshot.tableMatches = tableContext
-            ? findTableNameCompletions(tableContext.prefix, completionMetadata).slice(0, 20)
+            ? findTableNameCompletions(tableContext.prefix, completionMetadata, cteNames, cteSchema).slice(0, 20)
             : [];
         snapshot.wordMatches = wordContext
             ? findSqlWordCompletions(wordContext.prefix).slice(0, 20)
             : [];
+        snapshot.sampleCTEs = [...cteNames].sort().slice(0, 20);
         snapshot.sampleTables = [...completionMetadata.tables].sort().slice(0, 20);
 
         return snapshot;
@@ -1291,10 +1294,12 @@ function activate(context) {
         const opaque = buildOpaqueMask(content);
         const schemaMetadata = resolveCompletionMetadata(document);
         const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
+        const cteNames = findCTENames(content, opaque);
+        const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
 
         let shouldTriggerSuggest = false;
         if (tableContext) {
-            shouldTriggerSuggest = findTableNameCompletions(tableContext.prefix, schemaMetadata).length > 0;
+            shouldTriggerSuggest = findTableNameCompletions(tableContext.prefix, schemaMetadata, cteNames, cteSchema).length > 0;
         } else {
             const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
             shouldTriggerSuggest = !!wordContext && findSqlWordCompletions(wordContext.prefix).length > 0;
@@ -1420,7 +1425,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerHoverProvider('python', {
             provideHover(doc, position) {
-                const schemaMetadata = resolveMetadata(doc);
+                const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -1636,24 +1641,33 @@ function activate(context) {
                 const opaque = buildOpaqueMask(content);
                 const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
                 if (tableContext) {
-                    const matches = findTableNameCompletions(tableContext.prefix, schemaMetadata);
+                    const cteNames = findCTENames(content, opaque);
+                    const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
+                    const matches = findTableNameCompletions(tableContext.prefix, schemaMetadata, cteNames, cteSchema);
                     if (!matches.length) return null;
 
                     const replaceStart = doc.positionAt(sqlRange.start + tableContext.prefixStart);
                     const replaceRange = new vscode.Range(replaceStart, position);
                     return matches.map(match => {
-                        const item = new vscode.CompletionItem(match.label, vscode.CompletionItemKind.Class);
+                        const itemKind = match.kind === 'cte'
+                            ? vscode.CompletionItemKind.Struct
+                            : vscode.CompletionItemKind.Class;
+                        const item = new vscode.CompletionItem(match.label, itemKind);
                         item.insertText = match.label;
                         item.range = replaceRange;
-                        item.detail = match.columnCount
-                            ? `Known schema table (${match.columnCount} columns)`
-                            : 'Known schema table';
+                        item.detail = match.kind === 'cte'
+                            ? (match.columnCount ? `CTE (${match.columnCount} columns)` : 'CTE')
+                            : (match.columnCount ? `Known schema table (${match.columnCount} columns)` : 'Known schema table');
                         item.documentation = new vscode.MarkdownString(
-                            match.columnCount
-                                ? `Schema table \`${match.label}\` with ${match.columnCount} columns`
-                                : `Schema table \`${match.label}\``
+                            match.kind === 'cte'
+                                ? (match.columnCount
+                                    ? `CTE \`${match.label}\` with ${match.columnCount} columns`
+                                    : `CTE \`${match.label}\``)
+                                : (match.columnCount
+                                    ? `Schema table \`${match.label}\` with ${match.columnCount} columns`
+                                    : `Schema table \`${match.label}\``)
                         );
-                        item.sortText = `0_${match.label}`;
+                        item.sortText = `${match.kind === 'cte' ? '0' : '1'}_${match.label}`;
                         return item;
                     });
                 }

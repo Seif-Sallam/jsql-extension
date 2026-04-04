@@ -23,19 +23,143 @@ function normalizeTableName(name) {
     return parts[parts.length - 1].toLowerCase();
 }
 
-function findCTENames(sql, opaque = buildOpaqueMask(sql)) {
-    const cteNames = new Set();
-    const cteRe = /\bWITH(?:\s+RECURSIVE)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*AS\s*\(|,\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*AS\s*\(/gi;
-    let match;
+function isIdentifierStart(ch) {
+    return !!ch && /[A-Za-z_]/.test(ch);
+}
 
-    while ((match = cteRe.exec(sql)) !== null) {
-        const cteName = match[1] || match[2];
-        const start = match.index + match[0].indexOf(cteName);
-        const end = start + cteName.length;
-        if (rangeOverlapsOpaque(opaque, start, end)) continue;
-        cteNames.add(cteName.toLowerCase());
+function isIdentifierChar(ch) {
+    return !!ch && /[A-Za-z0-9_]/.test(ch);
+}
+
+function skipIgnorable(sql, index, opaque) {
+    let i = index;
+    while (i < sql.length) {
+        if (/\s/.test(sql[i]) || opaque[i]) {
+            i++;
+            continue;
+        }
+
+        if (sql[i] === '/' && sql[i + 1] === '*') {
+            const end = sql.indexOf('*/', i + 2);
+            i = end === -1 ? sql.length : end + 2;
+            continue;
+        }
+
+        break;
+    }
+    return i;
+}
+
+function hasKeywordAt(sql, index, keyword, opaque) {
+    if (index < 0 || index + keyword.length > sql.length) return false;
+    if (rangeOverlapsOpaque(opaque, index, index + keyword.length)) return false;
+    if (sql.slice(index, index + keyword.length).toUpperCase() !== keyword) return false;
+    return !isIdentifierChar(sql[index - 1]) && !isIdentifierChar(sql[index + keyword.length]);
+}
+
+function readIdentifier(sql, index, opaque) {
+    if (!isIdentifierStart(sql[index]) || opaque[index]) return null;
+    let end = index + 1;
+    while (end < sql.length && isIdentifierChar(sql[end]) && !opaque[end]) end++;
+    return {
+        value: sql.slice(index, end),
+        start: index,
+        end,
+    };
+}
+
+function findBalancedParenEnd(sql, openIndex, opaque) {
+    if (sql[openIndex] !== '(' || opaque[openIndex]) return -1;
+    let depth = 1;
+
+    for (let i = openIndex + 1; i < sql.length; i++) {
+        if (opaque[i]) continue;
+        if (sql[i] === '(') depth++;
+        else if (sql[i] === ')') {
+            depth--;
+            if (depth === 0) return i;
+        }
     }
 
+    return -1;
+}
+
+function findCTEDefinitions(sql, opaque = buildOpaqueMask(sql)) {
+    const definitions = [];
+    const withRe = /\bWITH\b/gi;
+    let withMatch;
+
+    while ((withMatch = withRe.exec(sql)) !== null) {
+        if (rangeOverlapsOpaque(opaque, withMatch.index, withMatch.index + withMatch[0].length)) continue;
+
+        let i = withMatch.index + withMatch[0].length;
+        i = skipIgnorable(sql, i, opaque);
+        if (hasKeywordAt(sql, i, 'RECURSIVE', opaque)) {
+            i += 'RECURSIVE'.length;
+        }
+
+        let parsedAny = false;
+        while (i < sql.length) {
+            i = skipIgnorable(sql, i, opaque);
+
+            const nameToken = readIdentifier(sql, i, opaque);
+            if (!nameToken) break;
+            if (ALL_SQL_KEYWORDS.has(nameToken.value.toUpperCase())) break;
+            i = nameToken.end;
+
+            let columnList = null;
+            let columnListStart = -1;
+
+            i = skipIgnorable(sql, i, opaque);
+            if (sql[i] === '(' && !opaque[i]) {
+                const columnListEnd = findBalancedParenEnd(sql, i, opaque);
+                if (columnListEnd === -1) break;
+                columnListStart = i + 1;
+                columnList = sql.slice(columnListStart, columnListEnd);
+                i = columnListEnd + 1;
+            }
+
+            i = skipIgnorable(sql, i, opaque);
+            if (!hasKeywordAt(sql, i, 'AS', opaque)) break;
+            i += 2;
+
+            i = skipIgnorable(sql, i, opaque);
+            if (sql[i] !== '(' || opaque[i]) break;
+
+            const bodyOpen = i;
+            const bodyClose = findBalancedParenEnd(sql, bodyOpen, opaque);
+            if (bodyClose === -1) break;
+
+            definitions.push({
+                cteName: nameToken.value.toLowerCase(),
+                nameStart: nameToken.start,
+                nameEnd: nameToken.end,
+                columnList,
+                columnListStart,
+                bodyStart: bodyOpen + 1,
+                bodyEnd: bodyClose,
+            });
+            parsedAny = true;
+
+            i = skipIgnorable(sql, bodyClose + 1, opaque);
+            if (sql[i] === ',') {
+                i++;
+                continue;
+            }
+            break;
+        }
+
+        if (parsedAny) withRe.lastIndex = i;
+    }
+
+    return definitions;
+}
+
+function findCTENames(sql, opaque = buildOpaqueMask(sql)) {
+    const cteNames = new Set();
+    for (const definition of findCTEDefinitions(sql, opaque)) {
+        cteNames.add(definition.cteName);
+    }
     return cteNames;
 }
 
@@ -249,24 +373,18 @@ function findSemanticWarnings(sql, schemaMetadata = createEmptySchemaMetadata())
 function extractCTEColumns(sql, opaque) {
     // Returns Map<cteName, Map<colName, offsetInSql>>
     const cteSchema = new Map();
-    const cteRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*AS\s*\(/gi;
-    let m;
-
-    while ((m = cteRe.exec(sql)) !== null) {
-        if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
-        const cteName = m[1].toLowerCase();
-        if (ALL_SQL_KEYWORDS.has(m[1].toUpperCase())) continue;
-
+    for (const definition of findCTEDefinitions(sql, opaque)) {
+        const cteName = definition.cteName;
         const cols = new Map();
 
         // Case 1: explicit column list — cte_name(col1, col2) AS (
-        if (m[2]) {
-            let searchFrom = m.index + m[0].indexOf('(') + 1;
-            for (const col of m[2].split(',')) {
+        if (definition.columnList) {
+            let searchFrom = definition.columnListStart;
+            for (const col of definition.columnList.split(',')) {
                 const trimmed = col.trim();
                 if (!trimmed || ALL_SQL_KEYWORDS.has(trimmed.toUpperCase())) continue;
                 const colOffset = sql.indexOf(trimmed, searchFrom);
-                if (colOffset !== -1) {
+                if (colOffset !== -1 && colOffset < definition.bodyStart) {
                     cols.set(trimmed.toLowerCase(), colOffset);
                     searchFrom = colOffset + trimmed.length;
                 }
@@ -276,17 +394,8 @@ function extractCTEColumns(sql, opaque) {
         }
 
         // Case 2: implicit — parse SELECT aliases from the CTE body
-        const bodyStart = m.index + m[0].length;
-        let depth = 1, i = bodyStart;
-        while (i < sql.length && depth > 0) {
-            if (!opaque[i]) {
-                if (sql[i] === '(') depth++;
-                else if (sql[i] === ')') depth--;
-            }
-            if (depth > 0) i++;
-        }
-        const body = sql.slice(bodyStart, i);
-        const bodyOffset = bodyStart;
+        const body = sql.slice(definition.bodyStart, definition.bodyEnd);
+        const bodyOffset = definition.bodyStart;
 
         // Explicit AS aliases in body
         const asRe = /\bAS\s+([A-Za-z_][A-Za-z0-9_]*)\b/gi;

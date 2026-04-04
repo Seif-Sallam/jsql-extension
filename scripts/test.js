@@ -14,6 +14,7 @@ const {
     findSemanticEntityRanges,
     findSemanticWarnings,
     detectMissingSelectCommas,
+    findCTENames,
     findSqlWordCompletionContext,
     findTableNameCompletionContext,
     findTableNameCompletions,
@@ -241,6 +242,23 @@ const rangeCases = [
     },
 ];
 
+const cteNameCases = [
+    {
+        name: 'finds cte names across comments and multiple entries',
+        input: [
+            'WITH user_permissions /* keep */ AS (',
+            '    SELECT id FROM permissions',
+            '),',
+            '-- another cte follows',
+            'active_users AS (',
+            '    SELECT id FROM users',
+            ')',
+            'SELECT * FROM user_permissions',
+        ].join('\n'),
+        expected: ['active_users', 'user_permissions'],
+    },
+];
+
 const completionCases = [
     {
         name: 'waits until two letters before suggesting SQL words',
@@ -359,6 +377,46 @@ const tableCompletionCases = [
             { label: 'audit_log', kind: 'table', columnCount: 1 },
             { label: 'users', kind: 'table', columnCount: 1 },
         ],
+    },
+    {
+        name: 'suggests ctes before schema tables in table context',
+        prefix: 'us',
+        metadataFiles: [
+            [
+                'class User(Base):',
+                '    __tablename__ = "users"',
+                '    id = sa.Column(sa.Integer)',
+            ].join('\n'),
+        ],
+        cteSql: [
+            'WITH user_stats AS (',
+            '    SELECT id AS user_id',
+            '    FROM users',
+            ')',
+            'SELECT * FROM us',
+        ].join('\n'),
+        expectedIncludes: [
+            { label: 'user_stats', kind: 'cte', columnCount: 1 },
+            { label: 'users', kind: 'table', columnCount: 1 },
+        ],
+        expectedOrder: ['user_stats', 'users'],
+    },
+    {
+        name: 'suggests cte names even when cte schema details are unavailable',
+        prefix: 'us',
+        metadataFiles: [
+            [
+                'class User(Base):',
+                '    __tablename__ = "users"',
+                '    id = sa.Column(sa.Integer)',
+            ].join('\n'),
+        ],
+        cteNames: ['user_stats'],
+        expectedIncludes: [
+            { label: 'user_stats', kind: 'cte', columnCount: 0 },
+            { label: 'users', kind: 'table', columnCount: 1 },
+        ],
+        expectedOrder: ['user_stats', 'users'],
     },
 ];
 
@@ -999,6 +1057,16 @@ function runFormatCases() {
     }
 }
 
+function runCteNameCases() {
+    for (const testCase of cteNameCases) {
+        assert.strictEqual(
+            JSON.stringify([...findCTENames(testCase.input)].sort()),
+            JSON.stringify(testCase.expected),
+            `findCTENames failed: ${testCase.name}`
+        );
+    }
+}
+
 function runRangeCases() {
     for (const testCase of rangeCases) {
         const ranges = findSQLRanges(testCase.input);
@@ -1153,7 +1221,13 @@ function runTableCompletionCases() {
             mergeSchemaMetadata(acc, parseTableDefinitionFile(fileText));
             return acc;
         }, createEmptySchemaMetadata());
-        const actual = findTableNameCompletions(testCase.prefix, metadata);
+        const cteNames = testCase.cteNames
+            ? new Set(testCase.cteNames)
+            : (testCase.cteSql ? findCTENames(testCase.cteSql) : new Set());
+        const cteSchema = testCase.cteSql
+            ? findSemanticEntityRanges(testCase.cteSql, metadata).cteSchema
+            : new Map();
+        const actual = findTableNameCompletions(testCase.prefix, metadata, cteNames, cteSchema);
 
         if (testCase.expected) {
             assert.strictEqual(
@@ -1172,6 +1246,14 @@ function runTableCompletionCases() {
                     item.columnCount === expectedItem.columnCount
                 ),
                 `findTableNameCompletions failed: ${testCase.name} (missing ${expectedItem.label})`
+            );
+        }
+
+        if (testCase.expectedOrder) {
+            assert.strictEqual(
+                JSON.stringify(actual.slice(0, testCase.expectedOrder.length).map(item => item.label)),
+                JSON.stringify(testCase.expectedOrder),
+                `findTableNameCompletions failed: ${testCase.name} (order)`
             );
         }
     }
@@ -1233,6 +1315,7 @@ function runDuplicateAliasCases() {
 
 function main() {
     runFormatCases();
+    runCteNameCases();
     runRangeCases();
     runBlockFormatCases();
     runSchemaMetadataCases();
@@ -1248,7 +1331,7 @@ function main() {
     runDuplicateAliasCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + cteNameCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

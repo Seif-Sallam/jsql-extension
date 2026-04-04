@@ -65,40 +65,71 @@ function findTableNameCompletionContext(sql, cursorOffset, opaque = buildOpaqueM
     };
 }
 
-function findTableNameCompletions(prefix, schemaMetadata) {
-    const normalizedPrefix = (prefix || '').trim().toLowerCase();
-    const tables = schemaMetadata?.tables ? [...schemaMetadata.tables] : [];
-
-    if (!normalizedPrefix) {
-        return tables.sort().map(tableName => ({
-            label: tableName,
-            kind: 'table',
-            columnCount: schemaMetadata.tableColumns.get(tableName)?.size || 0,
-        }));
-    }
+function rankCompletionLabels(labels, normalizedPrefix) {
+    if (!normalizedPrefix) return labels.slice();
 
     const exact = [];
-    const prefix_ = [];
+    const prefix = [];
     const suffix = [];
     const contains = [];
 
-    for (const tableName of tables) {
-        if (tableName === normalizedPrefix) {
-            exact.push(tableName);
-        } else if (tableName.startsWith(normalizedPrefix)) {
-            prefix_.push(tableName);
-        } else if (tableName.endsWith(normalizedPrefix)) {
-            suffix.push(tableName);
-        } else if (tableName.includes(normalizedPrefix)) {
-            contains.push(tableName);
+    for (const label of labels) {
+        if (label === normalizedPrefix) {
+            exact.push(label);
+        } else if (label.startsWith(normalizedPrefix)) {
+            prefix.push(label);
+        } else if (label.endsWith(normalizedPrefix)) {
+            suffix.push(label);
+        } else if (label.includes(normalizedPrefix)) {
+            contains.push(label);
         }
     }
 
-    return [...exact, ...prefix_.sort(), ...suffix.sort(), ...contains.sort()].map(tableName => ({
-        label: tableName,
-        kind: 'table',
-        columnCount: schemaMetadata.tableColumns.get(tableName)?.size || 0,
-    }));
+    return [...exact, ...prefix.sort(), ...suffix.sort(), ...contains.sort()];
+}
+
+function findTableNameCompletions(prefix, schemaMetadata, cteNames = new Set(), cteSchema = new Map()) {
+    const normalizedPrefix = (prefix || '').trim().toLowerCase();
+    const candidates = new Map();
+
+    for (const cteName of cteNames) {
+        candidates.set(cteName, {
+            label: cteName,
+            kind: 'cte',
+            columnCount: cteSchema.get(cteName)?.size || 0,
+        });
+    }
+
+    for (const [cteName, cols] of cteSchema.entries()) {
+        candidates.set(cteName, {
+            label: cteName,
+            kind: 'cte',
+            columnCount: cols?.size || 0,
+        });
+    }
+
+    const tables = schemaMetadata?.tables ? [...schemaMetadata.tables] : [];
+    for (const tableName of tables) {
+        if (candidates.has(tableName)) continue;
+        candidates.set(tableName, {
+            label: tableName,
+            kind: 'table',
+            columnCount: schemaMetadata.tableColumns.get(tableName)?.size || 0,
+        });
+    }
+
+    const cteLabels = rankCompletionLabels(
+        [...candidates.values()].filter(item => item.kind === 'cte').map(item => item.label),
+        normalizedPrefix
+    );
+    const tableLabels = rankCompletionLabels(
+        [...candidates.values()].filter(item => item.kind === 'table').map(item => item.label),
+        normalizedPrefix
+    );
+
+    return [...cteLabels, ...tableLabels]
+        .map(label => candidates.get(label))
+        .filter(Boolean);
 }
 
 module.exports = {
