@@ -36,8 +36,11 @@ const {
     parseTableDefinitionFile,
 } = require('./schema/metadata');
 const { ALL_SQL_KEYWORDS, buildOpaqueMask, findClosestKeyword } = require('./sql/shared');
+const { findSqlWordCompletions } = require('./sql/completions');
 const { THEMES, buildDecorations, createBracketDecorations } = require('./theme');
 const { createWelcomeHtml } = require('./ui/welcome');
+
+const SQL_COMPLETION_TRIGGER_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('');
 
 function activate(context) {
     const cfg = () => vscode.workspace.getConfiguration('jsqlSyntax');
@@ -787,9 +790,156 @@ function activate(context) {
         }
 
         await writeSchemaSources(updated, wsFolder);
-        vscode.window.showInformationMessage(
-            `JSql: Registered ${added} new schema source${added !== 1 ? 's' : ''}. Use "Manage Schema Scopes" to map them to directory prefixes.`
+
+        // ── Phase 1b: Core prefix mapping suggestions ───────────────────────────
+        // For each newly registered source, derive lib/app sibling folder names
+        // and check if they exist in the workspace.
+
+        const topLevelDirs = new Set();
+        for (const f of wsFolders) {
+            try {
+                const entries = await vscode.workspace.fs.readDirectory(f.uri);
+                for (const [name, type] of entries) {
+                    if (type === vscode.FileType.Directory) topLevelDirs.add(name);
+                }
+            } catch { /* ignore */ }
+        }
+
+        const existingMappings = readPrefixMappings(wsFolder);
+        const existingPrefixes = new Set(existingMappings.map(m => m.prefix));
+
+        const coreSuggestions = [];
+        for (const item of selected) {
+            const sourceName = item.relPath;
+            // Find the lib* component anywhere in the path (e.g. liblms from liblms/models/tables.py)
+            const libFolder = item.relPath.split('/').find(p => /^lib.+/i.test(p));
+            if (!libFolder) continue;
+
+            const service = libFolder.slice(3); // strip "lib" prefix
+            const appFolder = `app${service}`;
+
+            // Suggest **/libXXX → source (the lib folder itself)
+            const libPrefix = `**/${libFolder}`;
+            if (!existingPrefixes.has(libPrefix)) {
+                coreSuggestions.push({
+                    label: libPrefix,
+                    description: `→ ${sourceName}`,
+                    detail: 'schema source folder',
+                    picked: true,
+                    prefix: libPrefix,
+                    source: sourceName,
+                });
+            }
+
+            // Suggest **/appXXX → source (app sibling) only if that folder exists
+            if (topLevelDirs.has(appFolder)) {
+                const appPrefix = `**/${appFolder}`;
+                if (!existingPrefixes.has(appPrefix)) {
+                    coreSuggestions.push({
+                        label: appPrefix,
+                        description: `→ ${sourceName}`,
+                        detail: `app sibling (name match: "${service}")`,
+                        picked: true,
+                        prefix: appPrefix,
+                        source: sourceName,
+                    });
+                }
+            }
+        }
+
+        if (coreSuggestions.length > 0) {
+            const confirmedCore = await vscode.window.showQuickPick(coreSuggestions, {
+                canPickMany: true,
+                title: 'JSql: Suggested prefix mappings — confirm to apply',
+                placeHolder: 'Deselect any that do not apply',
+            });
+
+            if (confirmedCore && confirmedCore.length > 0) {
+                const mappingsToAdd = confirmedCore.map(s => ({ prefix: s.prefix, source: s.source }));
+                await writePrefixMappings([...existingMappings, ...mappingsToAdd], wsFolder);
+            }
+        }
+
+        // ── Phase 2: Gateway scan (opt-in) ──────────────────────────────────────
+        const doGateway = await vscode.window.showQuickPick(
+            [
+                { label: '$(search) Yes, scan for gateway directories', value: true },
+                { label: '$(close) No, I\'m done', value: false },
+            ],
+            { title: 'JSql: Scan for gateway/portal directories that use different schemas?' }
         );
+
+        if (doGateway?.value) {
+            const GATEWAY_NAMES = ['gateway', 'portal', 'bridge', 'proxy', 'adapter'];
+            const allSources = readSchemaSources(wsFolder);
+            const sourceNames = Object.keys(allSources);
+
+            // Find files nested under any gateway-like directory
+            const gatewayFiles = await vscode.workspace.findFiles(
+                `**/{${GATEWAY_NAMES.join(',')}}/**/*.py`,
+                '{**/node_modules/**,**/.git/**}'
+            );
+
+            // Extract service names from paths like .../gateway/lastmile/file.py
+            const gatewayServiceMap = new Map(); // serviceName → Set of full prefixes found
+            const gatewayRe = new RegExp(`(?:${GATEWAY_NAMES.join('|')})/([^/]+)/`, 'i');
+            for (const uri of gatewayFiles) {
+                const rel = toRelPath(uri);
+                const m = gatewayRe.exec(rel);
+                if (!m) continue;
+                const service = m[1].toLowerCase();
+                // Extract the path up to and including gateway/service
+                const prefixEnd = m.index + m[0].length - 1; // don't include trailing /
+                const prefix = rel.slice(0, prefixEnd);
+                if (!gatewayServiceMap.has(service)) gatewayServiceMap.set(service, new Set());
+                gatewayServiceMap.get(service).add(prefix);
+            }
+
+            const currentMappings = readPrefixMappings(wsFolder);
+            const currentPrefixes = new Set(currentMappings.map(m => m.prefix));
+            const gatewaySuggestions = [];
+
+            for (const [service, prefixes] of gatewayServiceMap) {
+                // Find a source whose name contains lib{service}
+                const matchingSource = sourceNames.find(n =>
+                    n.split('/').some(p => p.toLowerCase() === `lib${service}`)
+                );
+                if (!matchingSource) continue;
+
+                // Suggest the most common/shortest prefix pattern
+                const shortestPrefix = [...prefixes].sort((a, b) => a.length - b.length)[0];
+                const suggestedPrefix = `**/${shortestPrefix.split('/').slice(-2).join('/')}`;
+
+                if (!currentPrefixes.has(suggestedPrefix)) {
+                    gatewaySuggestions.push({
+                        label: suggestedPrefix,
+                        description: `→ ${matchingSource}`,
+                        detail: `gateway override (name match: "lib${service}")`,
+                        picked: true,
+                        prefix: suggestedPrefix,
+                        source: matchingSource,
+                    });
+                }
+            }
+
+            if (gatewaySuggestions.length === 0) {
+                vscode.window.showInformationMessage('JSql: No gateway directories with matching schema sources found.');
+            } else {
+                const confirmedGateway = await vscode.window.showQuickPick(gatewaySuggestions, {
+                    canPickMany: true,
+                    title: `JSql: Gateway overrides found — these take priority over broader mappings`,
+                    placeHolder: 'Deselect any that do not apply',
+                });
+
+                if (confirmedGateway && confirmedGateway.length > 0) {
+                    const latestMappings = readPrefixMappings(wsFolder);
+                    const overrides = confirmedGateway.map(s => ({ prefix: s.prefix, source: s.source }));
+                    await writePrefixMappings([...latestMappings, ...overrides], wsFolder);
+                }
+            }
+        }
+
+        vscode.window.showInformationMessage(`JSql: Setup complete. ${added} source${added !== 1 ? 's' : ''} registered.`);
     }, null, context.subscriptions);
 
     // ─── manageScopes (command palette) ─────────────────────────────────────────
@@ -1270,6 +1420,60 @@ function activate(context) {
                 });
             }
         }, '.')
+    );
+
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider('python', {
+            provideCompletionItems(doc, position) {
+                const text = doc.getText();
+                const offset = doc.offsetAt(position);
+                const sqlRanges = findSQLRanges(text);
+                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
+                if (!sqlRange) return null;
+
+                const content = text.slice(sqlRange.start, sqlRange.end);
+                const localOffset = offset - sqlRange.start;
+                const prefixMatch = /[A-Za-z_][A-Za-z0-9_]*$/.exec(content.slice(0, localOffset));
+                if (!prefixMatch) return null;
+
+                const prefix = prefixMatch[0];
+                const prefixStart = localOffset - prefix.length;
+                const charBeforePrefix = content[prefixStart - 1];
+                if (charBeforePrefix === '.' || charBeforePrefix === ':') return null;
+
+                const opaque = buildOpaqueMask(content);
+                if (rangeOverlapsOpaque(opaque, prefixStart, Math.max(prefixStart + 1, localOffset))) return null;
+
+                const matches = findSqlWordCompletions(prefix);
+                if (!matches.length) return null;
+
+                const prefixStartPos = doc.positionAt(sqlRange.start + prefixStart);
+                const wordPosition = position.character > 0 ? position.translate(0, -1) : position;
+                const wordRange = doc.getWordRangeAtPosition(wordPosition, /[A-Za-z_][A-Za-z0-9_]*/);
+                const replaceRange = wordRange && !wordRange.start.isAfter(position)
+                    ? wordRange
+                    : new vscode.Range(prefixStartPos, position);
+
+                return matches.map(match => {
+                    const itemKind = match.kind === 'function'
+                        ? vscode.CompletionItemKind.Function
+                        : vscode.CompletionItemKind.Keyword;
+                    const item = new vscode.CompletionItem(match.label, itemKind);
+                    item.insertText = match.label;
+                    item.range = replaceRange;
+                    item.detail = match.kind === 'function'
+                        ? 'SQL function'
+                        : (match.kind === 'mixed' ? 'SQL keyword / function' : 'SQL keyword');
+                    item.documentation = new vscode.MarkdownString(
+                        match.kind === 'function'
+                            ? `SQL function \`${match.label}\``
+                            : `SQL keyword \`${match.label}\``
+                    );
+                    item.sortText = `${match.kind === 'function' ? '1' : '0'}_${match.label}`;
+                    return item;
+                });
+            }
+        }, ...SQL_COMPLETION_TRIGGER_CHARS)
     );
 
     context.subscriptions.push(bracketDec);

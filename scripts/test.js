@@ -14,6 +14,7 @@ const {
     findSemanticEntityRanges,
     findSemanticWarnings,
     detectMissingSelectCommas,
+    findSqlWordCompletions,
     findMatchingBracket,
     findUnmatchedBrackets
 } = loadExtensionInternals();
@@ -234,6 +235,32 @@ const rangeCases = [
             '    pass',
         ].join('\n'),
         expectedCount: 0,
+    },
+];
+
+const completionCases = [
+    {
+        name: 'waits until two letters before suggesting SQL words',
+        prefix: 's',
+        expected: [],
+    },
+    {
+        name: 'suggests SQL keywords for matching prefixes',
+        prefix: 'se',
+        expectedIncludes: [
+            { label: 'SELECT', kind: 'keyword' },
+            { label: 'SET', kind: 'keyword' },
+            { label: 'SEPARATOR', kind: 'keyword' },
+        ],
+    },
+    {
+        name: 'suggests SQL functions for matching prefixes',
+        prefix: 'co',
+        expectedIncludes: [
+            { label: 'COUNT', kind: 'function' },
+            { label: 'COALESCE', kind: 'function' },
+            { label: 'CONCAT', kind: 'function' },
+        ],
     },
 ];
 
@@ -980,6 +1007,28 @@ function runSemanticWarningCases() {
     }
 }
 
+function runCompletionCases() {
+    for (const testCase of completionCases) {
+        const actual = findSqlWordCompletions(testCase.prefix);
+
+        if (testCase.expected) {
+            assert.strictEqual(
+                JSON.stringify(actual),
+                JSON.stringify(testCase.expected),
+                `findSqlWordCompletions failed: ${testCase.name}`
+            );
+            continue;
+        }
+
+        for (const expectedItem of testCase.expectedIncludes) {
+            assert.ok(
+                actual.some(item => item.label === expectedItem.label && item.kind === expectedItem.kind),
+                `findSqlWordCompletions failed: ${testCase.name} (missing ${expectedItem.label})`
+            );
+        }
+    }
+}
+
 function runCommaWarningCases() {
     for (const testCase of commaWarningCases) {
         assert.strictEqual(
@@ -1042,12 +1091,13 @@ function main() {
     runSemanticHighlightCases();
     runWorkspacePatternCases();
     runSemanticWarningCases();
+    runCompletionCases();
     runCommaWarningCases();
     runAmbiguousColumnCases();
     runDuplicateAliasCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + completionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

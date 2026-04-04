@@ -2,6 +2,7 @@
 
 const formatter = require('../src/sql/formatter');
 const metadata = require('../src/schema/metadata');
+const completions = require('../src/sql/completions');
 const semantic = require('../src/sql/semantic');
 const diagnostics = require('../src/sql/diagnostics');
 
@@ -13,6 +14,7 @@ function loadExtensionInternals() {
         detectDuplicateAliases: diagnostics.detectDuplicateAliases,
         detectMissingSelectCommas: diagnostics.detectMissingSelectCommas,
         detectUnionCommentAdjacency: formatter.detectUnionCommentAdjacency,
+        findSqlWordCompletions: completions.findSqlWordCompletions,
         findClosestName: metadata.findClosestName,
         findMatchingBracket: formatter.findMatchingBracket,
         findSemanticEntityRanges: semantic.findSemanticEntityRanges,
