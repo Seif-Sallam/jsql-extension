@@ -35,7 +35,14 @@ const {
     mergeSchemaMetadata,
     parseTableDefinitionFile,
 } = require('./schema/metadata');
-const { ALL_SQL_KEYWORDS, buildOpaqueMask, findClosestKeyword } = require('./sql/shared');
+const {
+    ALL_SQL_KEYWORDS,
+    SQL_IDENTIFIER_PATH_RE_SRC,
+    buildOpaqueMask,
+    buildSemanticOpaqueMask,
+    findClosestKeyword,
+    normalizeSqlIdentifier,
+} = require('./sql/shared');
 const {
     findSqlWordCompletionContext,
     findSqlWordCompletions,
@@ -46,7 +53,8 @@ const { THEMES, buildDecorations, createBracketDecorations } = require('./theme'
 const { createWelcomeHtml } = require('./ui/welcome');
 
 // Only explicit non-alpha trigger chars — letters trigger automatically via quickSuggestions
-const SQL_COMPLETION_TRIGGER_CHARS = [' ', '_'];
+const SQL_COMPLETION_TRIGGER_CHARS = [' ', '_', '.'];
+const QUALIFIER_CONTEXT_RE = new RegExp('(' + SQL_IDENTIFIER_PATH_RE_SRC + ')\\.\\`?$');
 
 function activate(context) {
     const cfg = () => vscode.workspace.getConfiguration('jsqlSyntax');
@@ -61,6 +69,7 @@ function activate(context) {
     let scopedMetadataMap = new Map(); // normalizedPrefix -> schemaMetadata
     let schemaRefreshVersion = 0;
     let schemaRefreshTimer = null;
+    let schemaFileWatchers = [];
 
     function getConfiguredTableDefinitionFiles() {
         const configured = cfg().get('tableDefinitionFiles', []);
@@ -252,10 +261,11 @@ function activate(context) {
 
         const content = text.slice(sqlRange.start, sqlRange.end);
         const localOffset = offset - sqlRange.start;
-        const opaque = buildOpaqueMask(content);
-        const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
-        const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
-        const cteNames = findCTENames(content, opaque);
+        const semanticOpaque = buildSemanticOpaqueMask(content);
+        const lexicalOpaque = buildOpaqueMask(content);
+        const tableContext = findTableNameCompletionContext(content, localOffset, semanticOpaque);
+        const wordContext = findSqlWordCompletionContext(content, localOffset, lexicalOpaque);
+        const cteNames = findCTENames(content, semanticOpaque);
         const { cteSchema } = findSemanticEntityRanges(content, completionMetadata);
 
         snapshot.sqlRange = {
@@ -375,8 +385,35 @@ function activate(context) {
     context.subscriptions.push({
         dispose() {
             if (schemaRefreshTimer) clearTimeout(schemaRefreshTimer);
+            schemaFileWatchers.forEach(w => w.dispose());
+            schemaFileWatchers = [];
         }
     });
+
+    function setupSchemaFileWatchers() {
+        schemaFileWatchers.forEach(w => w.dispose());
+        schemaFileWatchers = [];
+
+        const patterns = [
+            ...getConfiguredTableDefinitionFiles(),
+            ...[...getConfiguredSchemaSources().values()].flat(),
+        ];
+
+        const workspaceFolders = vscode.workspace.workspaceFolders || [];
+
+        for (const pattern of patterns) {
+            for (const folder of workspaceFolders) {
+                const watcher = vscode.workspace.createFileSystemWatcher(
+                    new vscode.RelativePattern(folder, pattern)
+                );
+                watcher.onDidChange(() => scheduleSchemaRefresh());
+                watcher.onDidCreate(() => scheduleSchemaRefresh());
+                watcher.onDidDelete(() => scheduleSchemaRefresh());
+                schemaFileWatchers.push(watcher);
+            }
+        }
+
+    }
 
     function applyDecorations(editor) {
         if (!editor || editor.document.languageId !== 'python') return;
@@ -1259,6 +1296,7 @@ function activate(context) {
         if (e.affectsConfiguration('jsqlSyntax.tableDefinitionFiles') ||
             e.affectsConfiguration('jsqlSyntax.schemaSources') ||
             e.affectsConfiguration('jsqlSyntax.prefixMappings')) {
+            setupSchemaFileWatchers();
             scheduleSchemaRefresh();
         }
 
@@ -1291,17 +1329,18 @@ function activate(context) {
 
         const content = text.slice(sqlRange.start, sqlRange.end);
         const localOffset = offset - sqlRange.start;
-        const opaque = buildOpaqueMask(content);
+        const semanticOpaque = buildSemanticOpaqueMask(content);
+        const lexicalOpaque = buildOpaqueMask(content);
         const schemaMetadata = resolveCompletionMetadata(document);
-        const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
-        const cteNames = findCTENames(content, opaque);
+        const tableContext = findTableNameCompletionContext(content, localOffset, semanticOpaque);
+        const cteNames = findCTENames(content, semanticOpaque);
         const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
 
         let shouldTriggerSuggest = false;
         if (tableContext) {
             shouldTriggerSuggest = findTableNameCompletions(tableContext.prefix, schemaMetadata, cteNames, cteSchema).length > 0;
         } else {
-            const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
+            const wordContext = findSqlWordCompletionContext(content, localOffset, lexicalOpaque);
             shouldTriggerSuggest = !!wordContext && findSqlWordCompletions(wordContext.prefix).length > 0;
         }
 
@@ -1313,11 +1352,7 @@ function activate(context) {
             vscode.commands.executeCommand('editor.action.triggerSuggest');
         }, 25);
     }, null, context.subscriptions);
-    vscode.workspace.onDidSaveTextDocument(document => {
-        if (document.languageId !== 'python') return;
-        if (!getConfiguredTableDefinitionFiles().length) return;
-        scheduleSchemaRefresh();
-    }, null, context.subscriptions);
+    setupSchemaFileWatchers();
 
     context.subscriptions.push(
         vscode.languages.registerDefinitionProvider('python', {
@@ -1339,7 +1374,7 @@ function activate(context) {
 
                 const lineText = doc.lineAt(position).text;
                 const textBeforeWord = lineText.slice(0, wordRange.start.character);
-                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(textBeforeWord);
+                const qualifierMatch = QUALIFIER_CONTEXT_RE.exec(textBeforeWord);
 
                 // --- Column: jump to the FROM/JOIN where it comes from ---
                 const isColumn = schemaMetadata.columns.has(word) &&
@@ -1361,7 +1396,7 @@ function activate(context) {
                     }
 
                     if (qualifierMatch) {
-                        const qualifier = qualifierMatch[1].toLowerCase();
+                        const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
 
                         // CTE column: jump to where the alias is defined in the CTE body
                         const cteName = cteAliasMap.get(qualifier);
@@ -1460,10 +1495,10 @@ function activate(context) {
                 // Check if word is preceded by qualifier. (e.g. uc.created_at)
                 const lineText = doc.lineAt(position).text;
                 const textBeforeWord = lineText.slice(0, wordRange.start.character);
-                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(textBeforeWord);
+                const qualifierMatch = QUALIFIER_CONTEXT_RE.exec(textBeforeWord);
 
                 if (qualifierMatch) {
-                    const qualifier = qualifierMatch[1].toLowerCase();
+                    const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
                     // Resolve alias or direct table name
                     const ref = aliasMap.get(qualifier);
                     const tableName = ref ? ref.normalizedName : (schemaMetadata.tables.has(qualifier) ? qualifier : null);
@@ -1588,7 +1623,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider('python', {
             provideCompletionItems(doc, position) {
-                const schemaMetadata = resolveMetadata(doc);
+                const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -1597,10 +1632,10 @@ function activate(context) {
 
                 const lineText = doc.lineAt(position).text;
                 const textBefore = lineText.slice(0, position.character);
-                const qualifierMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(textBefore);
+                const qualifierMatch = QUALIFIER_CONTEXT_RE.exec(textBefore);
                 if (!qualifierMatch) return null;
 
-                const qualifier = qualifierMatch[1].toLowerCase();
+                const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
                 const content = text.slice(sqlRange.start, sqlRange.end);
                 const cteNames = findCTENames(content);
                 const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
@@ -1629,7 +1664,7 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerCompletionItemProvider('python', {
             provideCompletionItems(doc, position) {
-                const schemaMetadata = resolveMetadata(doc);
+                const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
@@ -1638,10 +1673,11 @@ function activate(context) {
 
                 const content = text.slice(sqlRange.start, sqlRange.end);
                 const localOffset = offset - sqlRange.start;
-                const opaque = buildOpaqueMask(content);
-                const tableContext = findTableNameCompletionContext(content, localOffset, opaque);
+                const semanticOpaque = buildSemanticOpaqueMask(content);
+                const lexicalOpaque = buildOpaqueMask(content);
+                const tableContext = findTableNameCompletionContext(content, localOffset, semanticOpaque);
                 if (tableContext) {
-                    const cteNames = findCTENames(content, opaque);
+                    const cteNames = findCTENames(content, semanticOpaque);
                     const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
                     const matches = findTableNameCompletions(tableContext.prefix, schemaMetadata, cteNames, cteSchema);
                     if (!matches.length) return null;
@@ -1672,7 +1708,7 @@ function activate(context) {
                     });
                 }
 
-                const wordContext = findSqlWordCompletionContext(content, localOffset, opaque);
+                const wordContext = findSqlWordCompletionContext(content, localOffset, lexicalOpaque);
                 if (!wordContext) return null;
 
                 const matches = findSqlWordCompletions(wordContext.prefix);

@@ -1,7 +1,12 @@
 'use strict';
 
-const { ALL_SQL_KEYWORDS } = require('./shared');
-const { buildOpaqueMask } = require('./shared');
+const {
+    ALL_SQL_KEYWORDS,
+    SQL_IDENTIFIER_PATH_RE_SRC,
+    SQL_IDENTIFIER_TOKEN_RE_SRC,
+    buildSemanticOpaqueMask,
+    normalizeSqlIdentifier,
+} = require('./shared');
 const { createEmptySchemaMetadata, findClosestName } = require('../schema/metadata');
 
 function rangeOverlapsOpaque(opaque, start, end) {
@@ -19,8 +24,7 @@ function addUniqueRange(ranges, seen, start, end) {
 }
 
 function normalizeTableName(name) {
-    const parts = name.split('.');
-    return parts[parts.length - 1].toLowerCase();
+    return normalizeSqlIdentifier(name);
 }
 
 function isIdentifierStart(ch) {
@@ -84,7 +88,7 @@ function findBalancedParenEnd(sql, openIndex, opaque) {
     return -1;
 }
 
-function findCTEDefinitions(sql, opaque = buildOpaqueMask(sql)) {
+function findCTEDefinitions(sql, opaque = buildSemanticOpaqueMask(sql)) {
     const definitions = [];
     const withRe = /\bWITH\b/gi;
     let withMatch;
@@ -155,7 +159,7 @@ function findCTEDefinitions(sql, opaque = buildOpaqueMask(sql)) {
     return definitions;
 }
 
-function findCTENames(sql, opaque = buildOpaqueMask(sql)) {
+function findCTENames(sql, opaque = buildSemanticOpaqueMask(sql)) {
     const cteNames = new Set();
     for (const definition of findCTEDefinitions(sql, opaque)) {
         cteNames.add(definition.cteName);
@@ -163,10 +167,13 @@ function findCTENames(sql, opaque = buildOpaqueMask(sql)) {
     return cteNames;
 }
 
-function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildOpaqueMask(sql)) {
+function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildSemanticOpaqueMask(sql)) {
     const tableReferences = [];
     const aliasMap = new Map();
-    const tableRefRe = /\b(FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/gi;
+    const tableRefRe = new RegExp(
+        `\\b(FROM|JOIN|UPDATE|INTO|TABLE|DELETE\\s+FROM)\\s+(${SQL_IDENTIFIER_PATH_RE_SRC})(?:\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*))?`,
+        'gi'
+    );
     let match;
 
     while ((match = tableRefRe.exec(sql)) !== null) {
@@ -237,7 +244,7 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildOpaque
     return { tableReferences, aliasMap };
 }
 
-function hasDerivedTableReferences(sql, opaque = buildOpaqueMask(sql)) {
+function hasDerivedTableReferences(sql, opaque = buildSemanticOpaqueMask(sql)) {
     const derivedTableRe = /\b(?:FROM|JOIN)\s*\(/gi;
     let match;
 
@@ -250,10 +257,10 @@ function hasDerivedTableReferences(sql, opaque = buildOpaqueMask(sql)) {
     return false;
 }
 
-function findQualifiedReferences(sql, tableReferences, opaque = buildOpaqueMask(sql)) {
+function findQualifiedReferences(sql, tableReferences, opaque = buildSemanticOpaqueMask(sql)) {
     const qualifiedReferences = [];
     const occupied = new Set();
-    const qualifiedRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    const qualifiedRe = new RegExp(`(${SQL_IDENTIFIER_TOKEN_RE_SRC})\\.(${SQL_IDENTIFIER_TOKEN_RE_SRC})`, 'g');
     let match;
 
     for (const reference of tableReferences) {
@@ -295,7 +302,7 @@ function findSemanticWarnings(sql, schemaMetadata = createEmptySchemaMetadata())
 
     const warnings = [];
     const seenUnknownQualifiers = new Set();
-    const opaque = buildOpaqueMask(sql);
+    const opaque = buildSemanticOpaqueMask(sql);
     const cteNames = findCTENames(sql, opaque);
     const { tableReferences, aliasMap } = findTableReferences(sql, schemaMetadata, cteNames, opaque);
     const qualifiedReferences = findQualifiedReferences(sql, tableReferences, opaque);
@@ -316,8 +323,8 @@ function findSemanticWarnings(sql, schemaMetadata = createEmptySchemaMetadata())
     }
 
     for (const reference of qualifiedReferences) {
-        const qualifier = reference.qualifier.toLowerCase();
-        const column = reference.column.toLowerCase();
+        const qualifier = normalizeSqlIdentifier(reference.qualifier);
+        const column = normalizeSqlIdentifier(reference.column);
         const resolvedReference = aliasMap.get(qualifier);
 
         if (resolvedReference) {
@@ -422,7 +429,7 @@ function extractCTEColumns(sql, opaque) {
 }
 
 function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadata()) {
-    const opaque = buildOpaqueMask(sql);
+    const opaque = buildSemanticOpaqueMask(sql);
     const tableRanges = [];
     const columnRanges = [];
     const aliasRanges = [];
@@ -430,7 +437,10 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     const seenColumns = new Set();
     const seenAliases = new Set();
     const occupied = new Set();
-    const tableRefRe = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/gi;
+    const tableRefRe = new RegExp(
+        `\\b(?:FROM|JOIN|UPDATE|INTO|TABLE|DELETE\\s+FROM)\\s+(${SQL_IDENTIFIER_PATH_RE_SRC})`,
+        'gi'
+    );
     let match;
     const isOnDuplicateKeyUpdate = (idx) => /\bKEY\s*$/i.test(sql.slice(0, idx));
 
@@ -464,7 +474,10 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     // table aliases are occupied before the column alias pass.
     const colAliasRanges = [];
     const seenColAliases = new Set();
-    const tableAliasRe = /\b(?:FROM|JOIN|UPDATE|INTO)\s+[A-Za-z_][A-Za-z0-9_.]*\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    const tableAliasRe = new RegExp(
+        `\\b(?:FROM|JOIN|UPDATE|INTO)\\s+${SQL_IDENTIFIER_PATH_RE_SRC}\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\b`,
+        'gi'
+    );
     while ((match = tableAliasRe.exec(sql)) !== null) {
         const alias = match[1];
         if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;

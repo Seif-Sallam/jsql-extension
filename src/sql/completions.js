@@ -1,9 +1,21 @@
 'use strict';
 
-const { ALL_SQL_KEYWORD_LIST, SQL_FUNCTIONS, SQL_KEYWORDS, buildOpaqueMask } = require('./shared');
+const {
+    ALL_SQL_KEYWORD_LIST,
+    SQL_BARE_IDENTIFIER_RE_SRC,
+    SQL_FUNCTIONS,
+    SQL_KEYWORDS,
+    buildOpaqueMask,
+    buildSemanticOpaqueMask,
+} = require('./shared');
 
 const MIN_SQL_COMPLETION_PREFIX = 2;
-const TABLE_NAME_CONTEXT_RE = /\b(FROM|JOIN|UPDATE|INTO|TABLE|DELETE\s+FROM)\s+((?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*))?$/i;
+const PARTIAL_SQL_IDENTIFIER_TOKEN_RE_SRC = '(?:`[^`]*`?|' + SQL_BARE_IDENTIFIER_RE_SRC + ')';
+const PARTIAL_SQL_IDENTIFIER_PATH_RE_SRC = `${PARTIAL_SQL_IDENTIFIER_TOKEN_RE_SRC}(?:\\.${PARTIAL_SQL_IDENTIFIER_TOKEN_RE_SRC})*\\.?`;
+const TABLE_NAME_CONTEXT_RE = new RegExp(
+    `\\b(FROM|JOIN|UPDATE|INTO|TABLE|DELETE\\s+FROM)\\s+(${PARTIAL_SQL_IDENTIFIER_PATH_RE_SRC})?$`,
+    'i'
+);
 
 function overlapsOpaque(opaque, start, end) {
     for (let i = start; i < end; i++) {
@@ -45,7 +57,24 @@ function findSqlWordCompletionContext(sql, cursorOffset, opaque = buildOpaqueMas
     };
 }
 
-function findTableNameCompletionContext(sql, cursorOffset, opaque = buildOpaqueMask(sql)) {
+function extractCompletionPrefix(rawPath) {
+    if (!rawPath) return { prefix: '', prefixOffset: 0 };
+    if (rawPath.endsWith('.')) return { prefix: '', prefixOffset: rawPath.length };
+
+    let prefixOffset = rawPath.lastIndexOf('.') + 1;
+    let prefix = rawPath.slice(prefixOffset);
+
+    if (prefix.startsWith('`')) {
+        prefixOffset += 1;
+        prefix = prefix.slice(1);
+    }
+
+    if (prefix.endsWith('`')) prefix = prefix.slice(0, -1);
+
+    return { prefix, prefixOffset };
+}
+
+function findTableNameCompletionContext(sql, cursorOffset, opaque = buildSemanticOpaqueMask(sql)) {
     if (typeof sql !== 'string') return null;
     if (cursorOffset < 0 || cursorOffset > sql.length) return null;
 
@@ -53,9 +82,11 @@ function findTableNameCompletionContext(sql, cursorOffset, opaque = buildOpaqueM
     const match = TABLE_NAME_CONTEXT_RE.exec(beforeCursor);
     if (!match) return null;
 
-    const prefix = match[3] || '';
-    const prefixStart = cursorOffset - prefix.length;
-    const opaqueStart = prefix.length > 0 ? prefixStart : Math.max(0, cursorOffset - 1);
+    const rawPath = match[2] || '';
+    const { prefix, prefixOffset } = extractCompletionPrefix(rawPath);
+    const rawStart = cursorOffset - rawPath.length;
+    const prefixStart = rawStart + prefixOffset;
+    const opaqueStart = rawPath.length > 0 ? rawStart : Math.max(0, cursorOffset - 1);
     if (overlapsOpaque(opaque, opaqueStart, Math.max(opaqueStart + 1, cursorOffset))) return null;
 
     return {

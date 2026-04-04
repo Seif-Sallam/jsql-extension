@@ -52,6 +52,9 @@ const ALL_SQL_KEYWORD_LIST = [...new Set([
 ])];
 
 const ALL_SQL_KEYWORDS = new Set(ALL_SQL_KEYWORD_LIST);
+const SQL_BARE_IDENTIFIER_RE_SRC = '[A-Za-z_][A-Za-z0-9_]*';
+const SQL_IDENTIFIER_TOKEN_RE_SRC = '(?:`[^`]+`|' + SQL_BARE_IDENTIFIER_RE_SRC + ')';
+const SQL_IDENTIFIER_PATH_RE_SRC = `${SQL_IDENTIFIER_TOKEN_RE_SRC}(?:\\.${SQL_IDENTIFIER_TOKEN_RE_SRC})*`;
 
 const SQL_FUNCTIONS = new Set([
     'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'NULLIF', 'IFNULL', 'IF', 'ROW', 'CONCAT', 'CONCAT_WS',
@@ -148,7 +151,8 @@ function isJinjaControlTag(text) {
     return /^\{%-?[\s\S]*?-?%\}$/.test(text);
 }
 
-function buildOpaqueMask(sql) {
+function buildOpaqueMask(sql, options = {}) {
+    const treatBackticksAsOpaque = options.treatBackticksAsOpaque !== false;
     const opaque = new Array(sql.length).fill(false);
 
     for (let i = 0; i < sql.length; i++) {
@@ -175,13 +179,14 @@ function buildOpaqueMask(sql) {
 
         if (sql[i] === '\'' || sql[i] === '"' || sql[i] === '`') {
             const quote = sql[i];
-            opaque[i] = true;
+            const shouldMark = quote !== '`' || treatBackticksAsOpaque;
+            if (shouldMark) opaque[i] = true;
             i++;
             while (i < sql.length) {
-                opaque[i] = true;
+                if (shouldMark) opaque[i] = true;
                 if (sql[i] === quote) {
                     if (sql[i + 1] === quote) {
-                        opaque[i + 1] = true;
+                        if (shouldMark) opaque[i + 1] = true;
                         i += 2;
                         continue;
                     }
@@ -195,15 +200,71 @@ function buildOpaqueMask(sql) {
     return opaque;
 }
 
+function buildSemanticOpaqueMask(sql) {
+    return buildOpaqueMask(sql, { treatBackticksAsOpaque: false });
+}
+
+function unquoteSqlIdentifier(identifier) {
+    if (typeof identifier !== 'string') return '';
+    const trimmed = identifier.trim();
+    if (!trimmed.startsWith('`') || !trimmed.endsWith('`') || trimmed.length < 2) return trimmed;
+    return trimmed.slice(1, -1).replace(/``/g, '`');
+}
+
+function splitSqlIdentifierSegments(identifier) {
+    if (typeof identifier !== 'string') return [];
+
+    const segments = [];
+    let current = '';
+    let inBackticks = false;
+
+    for (const ch of identifier.trim()) {
+        if (ch === '`') {
+            inBackticks = !inBackticks;
+            current += ch;
+            continue;
+        }
+
+        if (ch === '.' && !inBackticks) {
+            if (current.trim()) segments.push(current.trim());
+            current = '';
+            continue;
+        }
+
+        current += ch;
+    }
+
+    if (current.trim()) segments.push(current.trim());
+
+    return segments.flatMap(segment => {
+        const unquoted = unquoteSqlIdentifier(segment);
+        return unquoted.includes('.')
+            ? unquoted.split('.').map(part => part.trim()).filter(Boolean)
+            : [unquoted];
+    });
+}
+
+function normalizeSqlIdentifier(identifier) {
+    const segments = splitSqlIdentifierSegments(identifier);
+    return segments.length ? segments[segments.length - 1].toLowerCase() : '';
+}
+
 module.exports = {
     ALL_SQL_KEYWORD_LIST,
     ALL_SQL_KEYWORDS,
+    buildSemanticOpaqueMask,
     buildOpaqueMask,
     findClosestKeyword,
     isJinjaControlTag,
     levenshtein,
     matchKeyword,
+    normalizeSqlIdentifier,
+    SQL_BARE_IDENTIFIER_RE_SRC,
+    SQL_IDENTIFIER_PATH_RE_SRC,
+    SQL_IDENTIFIER_TOKEN_RE_SRC,
     SQL_FUNCTIONS,
     SQL_KEYWORDS,
     splitTopLevelCommas,
+    splitSqlIdentifierSegments,
+    unquoteSqlIdentifier,
 };

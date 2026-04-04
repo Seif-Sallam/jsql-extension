@@ -1,7 +1,7 @@
 'use strict';
 
 const { ALL_SQL_KEYWORDS, isJinjaControlTag, matchKeyword } = require('./shared');
-const { buildOpaqueMask } = require('./shared');
+const { buildOpaqueMask, buildSemanticOpaqueMask } = require('./shared');
 const { createEmptySchemaMetadata } = require('../schema/metadata');
 const { findCTENames, findTableReferences, rangeOverlapsOpaque } = require('./semantic');
 
@@ -122,7 +122,7 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
     const diagnostics = [];
     if (!schemaMetadata.tables.size) return diagnostics;
 
-    const opaque = buildOpaqueMask(sql);
+    const opaque = buildSemanticOpaqueMask(sql);
     const cteNames = findCTENames(sql, opaque);
     const { tableReferences } = findTableReferences(sql, schemaMetadata, cteNames, opaque);
 

@@ -331,6 +331,26 @@ const tableCompletionContextCases = [
         },
     },
     {
+        name: 'detects table completion context inside a BigQuery quoted path',
+        input: 'SELECT * FROM `analytics.us',
+        cursorOffset: 'SELECT * FROM `analytics.us'.length,
+        expected: {
+            keyword: 'FROM',
+            prefix: 'us',
+            prefixStart: 'SELECT * FROM `analytics.'.length,
+        },
+    },
+    {
+        name: 'detects table completion context after a dataset-qualified trailing dot',
+        input: 'SELECT * FROM analytics.',
+        cursorOffset: 'SELECT * FROM analytics.'.length,
+        expected: {
+            keyword: 'FROM',
+            prefix: '',
+            prefixStart: 'SELECT * FROM analytics.'.length,
+        },
+    },
+    {
         name: 'does not detect table completion in select list',
         input: 'SELECT us FROM users',
         cursorOffset: 'SELECT us'.length,
@@ -556,6 +576,22 @@ const semanticHighlightCases = [
         expectedTables: ['user_task', 'user_task_step'],
         expectedColumns: ['id_status', 'id_user_task', 'id_user_task_step', 'name', 'response'],
     },
+    {
+        name: 'highlights BigQuery quoted table paths using loaded metadata',
+        metadataFiles: [[
+            'class UserTaskStep(Model):',
+            "    __tablename__ = 'user_task_step'",
+            '    id_user_task_step = sa.Column(INT, primary_key=True)',
+            '    id_status = sa.Column(SMALLINT, nullable=False)',
+        ].join('\n')],
+        input: [
+            'SELECT uts.id_user_task_step, uts.id_status',
+            'FROM `analytics.user_task_step` uts',
+            'WHERE uts.id_status = 1',
+        ].join('\n'),
+        expectedTables: ['`analytics.user_task_step`'],
+        expectedColumns: ['id_status', 'id_user_task_step'],
+    },
 ];
 
 const workspacePatternCases = [
@@ -608,6 +644,33 @@ const semanticWarningCases = [
             'FROM user_task ut',
         ].join('\n'),
         expectedMessages: ['Unknown table or alias "ux" — did you mean ut?'],
+    },
+    {
+        name: 'warns on unknown BigQuery table paths using the terminal table name',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+        ].join('\n')],
+        input: [
+            'SELECT ut.id_user_task',
+            'FROM `analytics.user_taks` ut',
+        ].join('\n'),
+        expectedMessages: ['Unknown table "`analytics.user_taks`" — did you mean user_task?'],
+    },
+    {
+        name: 'warns on unknown backtick-qualified columns for known aliases',
+        metadataFiles: [[
+            'class UserTask(Model):',
+            "    __tablename__ = 'user_task'",
+            '    id_user_task = sa.Column(INT, primary_key=True)',
+            '    name = sa.Column(VARCHAR(255), nullable=False)',
+        ].join('\n')],
+        input: [
+            'SELECT ut.`id_user`',
+            'FROM `analytics.user_task` ut',
+        ].join('\n'),
+        expectedMessages: ['Unknown column "`id_user`" on alias "ut" — did you mean id_user_task?'],
     },
     {
         name: 'does not warn on cte-qualified columns without known cte metadata',
