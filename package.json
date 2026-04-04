@@ -38,6 +38,10 @@
       {
         "command": "jsqlSyntax.openWelcome",
         "title": "JSql: Welcome / Feature Tour"
+      },
+      {
+        "command": "jsqlSyntax.discoverSchemaSources",
+        "title": "JSql: Discover Schema Sources"
       }
     ],
     "walkthroughs": [

@@ -2544,7 +2544,8 @@ function activate(context) {
 </div>
 
 <div class="actions">
-  <button class="btn btn-primary" data-command="jsqlSyntax.manageScopes">⚙ Manage Schema Scopes</button>
+  <button class="btn btn-primary" data-command="jsqlSyntax.discoverSchemaSources">🔍 Discover Schema Sources</button>
+  <button class="btn btn-secondary" data-command="jsqlSyntax.manageScopes">⚙ Manage Scopes</button>
   <button class="btn btn-secondary" data-command="jsqlSyntax.selectTheme">🎨 Select Theme</button>
   <button class="btn btn-secondary" data-command="jsqlSyntax.formatSQL">⌥⇧F Format SQL</button>
 </div>
@@ -2855,6 +2856,91 @@ order by name asc</pre>
             }
             vscode.window.showInformationMessage(`JSql: Added "${relPath}" to source "${sourceName}"`);
         }
+    }, null, context.subscriptions);
+
+    // ─── discoverSchemaSources ───────────────────────────────────────────────────
+
+    vscode.commands.registerCommand('jsqlSyntax.discoverSchemaSources', async () => {
+        const wsFolder = await pickWorkspaceFolder();
+        const wsFolders = vscode.workspace.workspaceFolders || [];
+        if (!wsFolders.length) {
+            vscode.window.showWarningMessage('JSql: No workspace folder open.');
+            return;
+        }
+
+        // Ask for glob pattern
+        const pattern = await vscode.window.showInputBox({
+            title: 'JSql: Discover Schema Sources',
+            prompt: 'Glob pattern to search for table definition files',
+            value: '**/tables.py',
+            validateInput: v => v.trim() ? null : 'Pattern cannot be empty',
+        });
+        if (!pattern) return;
+
+        // Search with a progress indicator
+        let uris = [];
+        await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: `Searching for ${pattern}…` },
+            async () => {
+                uris = await vscode.workspace.findFiles(pattern, '{**/node_modules/**,**/.git/**}');
+            }
+        );
+
+        if (!uris.length) {
+            vscode.window.showInformationMessage(`JSql: No files found matching "${pattern}".`);
+            return;
+        }
+
+        // Compute workspace-relative paths and sort
+        function toRelPath(uri) {
+            const fsPath = uri.fsPath.replace(/\\/g, '/');
+            for (const f of wsFolders) {
+                const wsPath = f.uri.fsPath.replace(/\\/g, '/');
+                if (fsPath.startsWith(wsPath)) return fsPath.slice(wsPath.length).replace(/^\//, '');
+            }
+            return uri.fsPath;
+        }
+
+        const existing = readSchemaSources(wsFolder);
+        const items = uris
+            .map(uri => {
+                const relPath = toRelPath(uri);
+                const alreadyRegistered = Object.prototype.hasOwnProperty.call(existing, relPath);
+                return {
+                    label: relPath,
+                    description: alreadyRegistered ? '$(check) already registered' : '',
+                    picked: !alreadyRegistered,
+                    relPath,
+                    alreadyRegistered,
+                };
+            })
+            .sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            canPickMany: true,
+            title: `JSql: Discover Schema Sources — ${uris.length} file(s) found`,
+            placeHolder: 'Select files to register as schema sources (each file becomes a named source)',
+        });
+        if (!selected || !selected.length) return;
+
+        const updated = { ...existing };
+        let added = 0;
+        for (const item of selected) {
+            if (!updated[item.relPath]) {
+                updated[item.relPath] = [item.relPath];
+                added++;
+            }
+        }
+
+        if (!added) {
+            vscode.window.showInformationMessage('JSql: All selected sources are already registered.');
+            return;
+        }
+
+        await writeSchemaSources(updated, wsFolder);
+        vscode.window.showInformationMessage(
+            `JSql: Registered ${added} new schema source${added !== 1 ? 's' : ''}. Use "Manage Schema Scopes" to map them to directory prefixes.`
+        );
     }, null, context.subscriptions);
 
     // ─── manageScopes (command palette) ─────────────────────────────────────────
