@@ -606,41 +606,98 @@ function replaceOverBlocks(sql, saved) {
 }
 
 function formatOverClauses(sql) {
-    return sql.split('\n').flatMap(line => {
-        if (!/\bOVER\s*\(/i.test(line)) return [line];
+    const lines = sql.split('\n');
+    const result = [];
+
+    for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
+        const overMatch = /\bOVER\s*\(/i.exec(line);
+        if (!overMatch) { result.push(line); continue; }
+
         const lineIndent = line.match(/^([ \t]*)/)[1];
+        const overStart = overMatch.index;
+        const parenOpen = overStart + overMatch[0].length - 1;
 
-        return [line.replace(
-            /\bOVER\s*\(\s*(.*?)\s*\)/g,
-            (match, inner) => {
-                const trimmed = inner.trim();
-                if (!trimmed) return 'OVER ()';
-
-                const innerIndent = lineIndent + '    ';
-                const clauses = [];
-                let remaining = trimmed;
-
-                const clauseRe = /\b(PARTITION BY|ORDER BY|ROWS BETWEEN|RANGE BETWEEN|ROWS |RANGE )\b/gi;
-                const positions = [];
-                let m;
-                while ((m = clauseRe.exec(remaining)) !== null) {
-                    positions.push({ index: m.index, keyword: m[1].toUpperCase().trim() });
-                }
-
-                if (positions.length === 0) return match;
-
-                for (let p = 0; p < positions.length; p++) {
-                    const start = positions[p].index;
-                    const end = p + 1 < positions.length ? positions[p + 1].index : remaining.length;
-                    clauses.push(remaining.slice(start, end).trim());
-                }
-
-                return 'OVER (\n'
-                    + clauses.map(c => innerIndent + c).join('\n')
-                    + '\n' + lineIndent + ')';
+        // Find matching close paren with depth tracking (may span multiple lines)
+        let depth = 1;
+        let fullBlock = line.slice(parenOpen + 1);
+        let endLine = li;
+        while (depth > 0 && endLine < lines.length) {
+            const chars = endLine === li ? line.slice(parenOpen + 1) : lines[endLine];
+            for (let ci = (endLine === li ? 0 : 0); ci < chars.length; ci++) {
+                if (chars[ci] === '(') depth++;
+                else if (chars[ci] === ')') { depth--; if (depth === 0) break; }
             }
-        )];
-    }).join('\n');
+            if (depth > 0) { endLine++; if (endLine < lines.length) fullBlock += '\n' + lines[endLine]; }
+        }
+
+        // Extract inner content and suffix after closing paren
+        let inner = '';
+        let suffix = '';
+        depth = 1;
+        for (let ci = 0; ci < fullBlock.length; ci++) {
+            if (fullBlock[ci] === '(') depth++;
+            else if (fullBlock[ci] === ')') {
+                depth--;
+                if (depth === 0) { inner = fullBlock.slice(0, ci); suffix = fullBlock.slice(ci + 1); break; }
+            }
+        }
+
+        const trimmed = inner.replace(/\s+/g, ' ').trim();
+        if (!trimmed) { result.push(line); li = endLine; continue; }
+
+        const innerIndent = lineIndent + '    ';
+
+        // Split on top-level PARTITION BY / ORDER BY / ROWS / RANGE clauses
+        const clauseRe = /\b(PARTITION BY|ORDER BY|ROWS BETWEEN|RANGE BETWEEN|ROWS |RANGE )\b/gi;
+        const positions = [];
+        let m;
+        while ((m = clauseRe.exec(trimmed)) !== null) {
+            positions.push({ index: m.index });
+        }
+
+        if (positions.length === 0) { result.push(line); li = endLine; continue; }
+
+        const clauses = [];
+        for (let p = 0; p < positions.length; p++) {
+            const start = positions[p].index;
+            const end = p + 1 < positions.length ? positions[p + 1].index : trimmed.length;
+            clauses.push(trimmed.slice(start, end).trim());
+        }
+
+        // Format each clause — expand CASE blocks within them
+        const formattedClauses = clauses.map(clause => {
+            // Check if clause contains a CASE expression
+            if (!/\bCASE\b/i.test(clause)) return innerIndent + clause;
+
+            // Split: keyword part (ORDER BY / PARTITION BY) and the rest
+            const kwMatch = /^(PARTITION BY|ORDER BY|ROWS BETWEEN|RANGE BETWEEN)\s*/i.exec(clause);
+            if (!kwMatch) return innerIndent + clause;
+            const kw = kwMatch[1].toUpperCase();
+            const body = clause.slice(kwMatch[0].length);
+
+            // Format the CASE block with proper indentation
+            const caseIndent = innerIndent + '    ';
+            const whenIndent = caseIndent + '    ';
+            let formatted = body
+                .replace(/\bCASE\b/gi, '\n' + caseIndent + 'CASE')
+                .replace(/\bWHEN\b/gi, '\n' + whenIndent + 'WHEN')
+                .replace(/\bELSE\b/gi, '\n' + whenIndent + 'ELSE')
+                .replace(/\bEND\b/gi, '\n' + caseIndent + 'END');
+
+            return innerIndent + kw + formatted;
+        });
+
+        const prefix = line.slice(0, overStart);
+        const formatted = prefix + 'OVER (\n'
+            + formattedClauses.join('\n')
+            + '\n' + lineIndent + ')' + suffix.trimEnd();
+
+        result.push(formatted);
+        li = endLine;
+    }
+
+    return result.join('\n');
 }
 
 function formatSQL(sql) {
