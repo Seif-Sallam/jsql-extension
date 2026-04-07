@@ -422,6 +422,26 @@ function extractCTEColumns(sql, opaque) {
             if (!cols.has(alias)) cols.set(alias, bodyOffset + im2.index + im2[0].length - im2[1].length);
         }
 
+        // Direct column references in SELECT clause: bare identifiers and table.col patterns
+        const fromIdx = body.search(/\bFROM\b/i);
+        const selectClause = fromIdx !== -1 ? body.slice(0, fromIdx) : body;
+        // Bare identifiers: SELECT id, name — not followed by ( (function call)
+        const bareColRe = /(?:(?:SELECT(?:\s+DISTINCT)?|,)\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|\s*$))/gi;
+        let bm;
+        while ((bm = bareColRe.exec(selectClause)) !== null) {
+            const col = bm[1].toLowerCase();
+            if (ALL_SQL_KEYWORDS.has(bm[1].toUpperCase())) continue;
+            if (!cols.has(col)) cols.set(col, bodyOffset + bm.index + bm[0].length - bm[1].length);
+        }
+        // Qualified column references: SELECT t.id, t.name — extract the column part
+        const qualColRe = /(?:(?:SELECT(?:\s+DISTINCT)?|,)\s+)[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_][A-Za-z0-9_]*)(?=\s*(?:,|\s*$))/gi;
+        let qm;
+        while ((qm = qualColRe.exec(selectClause)) !== null) {
+            const col = qm[1].toLowerCase();
+            if (ALL_SQL_KEYWORDS.has(qm[1].toUpperCase())) continue;
+            if (!cols.has(col)) cols.set(col, bodyOffset + qm.index + qm[0].length - qm[1].length);
+        }
+
         cteSchema.set(cteName, cols);
     }
 

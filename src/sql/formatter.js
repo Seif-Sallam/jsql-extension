@@ -144,11 +144,18 @@ function formatCTEBlocks(sql) {
                     else break;
                 }
 
-                const bodyLines = sql.slice(bodyStart, j)
+                const rawLines = sql.slice(bodyStart, j)
                     .split('\n')
                     .map(line => line.trimEnd())
-                    .filter(line => line.trim())
-                    .map(line => bodyIndent + line);
+                    .filter(line => line.trim());
+
+                const minIndent = rawLines.reduce((min, line) => {
+                    const leading = line.match(/^(\s*)/)[1].length;
+                    return line.trim() ? Math.min(min, leading) : min;
+                }, Infinity);
+                const bodyLines = rawLines.map(line =>
+                    bodyIndent + (minIndent < Infinity ? line.slice(minIndent) : line)
+                );
 
                 result += bodyLines.join('\n') + '\n' + lineIndent + ')';
                 i = j + 1;
@@ -408,6 +415,8 @@ function findParenthesizedSubqueries(sql) {
     for (let i = 0; i < sql.length; i++) {
         if (opaque[i] || sql[i] !== '(') continue;
         if (!/^\s*(SELECT|WITH)\b/i.test(sql.slice(i + 1))) continue;
+        // Skip CTE bodies — already formatted by formatCTEBlocks
+        if (/\bAS\s*$/i.test(sql.slice(Math.max(0, i - 10), i))) continue;
 
         let depth = 1;
         for (let j = i + 1; j < sql.length; j++) {
