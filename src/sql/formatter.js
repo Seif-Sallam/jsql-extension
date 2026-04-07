@@ -393,11 +393,50 @@ function getJinjaIndent(lines, index) {
 
 function normalizeJinjaControlIndentation(sql) {
     const lines = sql.split('\n').map(line => line.trimEnd());
-    return lines.map((line, index) => {
+    const indented = lines.map((line, index) => {
         const trimmed = line.trim();
         if (!isJinjaControlTag(trimmed)) return line;
         return getJinjaIndent(lines, index) + trimmed;
-    }).join('\n');
+    });
+    return indentJinjaBlockContent(indented).join('\n');
+}
+
+function indentJinjaBlockContent(lines) {
+    const openingRe = /^\{%-?\s*(if|elif|else|for)\b/i;
+    const closingRe = /^\{%-?\s*(endif|endfor|elif|else)\b/i;
+    const result = [];
+
+    let insideBlock = false;
+    let blockIndent = '';
+
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+
+        if (isJinjaControlTag(trimmed)) {
+            if (closingRe.test(trimmed)) {
+                insideBlock = false;
+            }
+            result.push(lines[i]);
+            if (openingRe.test(trimmed)) {
+                insideBlock = true;
+                blockIndent = lines[i].match(/^([ \t]*)/)[1];
+            }
+            continue;
+        }
+
+        if (insideBlock && trimmed) {
+            const lineIndent = lines[i].match(/^([ \t]*)/)[1];
+            if (lineIndent.length <= blockIndent.length) {
+                result.push(blockIndent + '  ' + trimmed);
+            } else {
+                result.push(lines[i]);
+            }
+        } else {
+            result.push(lines[i]);
+        }
+    }
+
+    return result;
 }
 
 function dedentLines(lines) {
@@ -538,6 +577,72 @@ function splitWhereHavingConditions(sql) {
     }).join('\n');
 }
 
+function replaceOverBlocks(sql, saved) {
+    let result = '';
+    let i = 0;
+    while (i < sql.length) {
+        if (matchKeyword(sql, i, 'OVER')) {
+            let j = i + 4;
+            while (j < sql.length && sql[j] === ' ') j++;
+            if (sql[j] === '(') {
+                let depth = 1;
+                const innerStart = j + 1;
+                let k = innerStart;
+                while (k < sql.length && depth > 0) {
+                    if (sql[k] === '(') depth++;
+                    else if (sql[k] === ')') depth--;
+                    if (depth > 0) k++;
+                }
+                const inner = sql.slice(innerStart, k);
+                saved.push({ text: inner, standalone: false });
+                result += `OVER (\x00${saved.length - 1}\x00)`;
+                i = k + 1;
+                continue;
+            }
+        }
+        result += sql[i++];
+    }
+    return result;
+}
+
+function formatOverClauses(sql) {
+    return sql.split('\n').flatMap(line => {
+        if (!/\bOVER\s*\(/i.test(line)) return [line];
+        const lineIndent = line.match(/^([ \t]*)/)[1];
+
+        return [line.replace(
+            /\bOVER\s*\(\s*(.*?)\s*\)/g,
+            (match, inner) => {
+                const trimmed = inner.trim();
+                if (!trimmed) return 'OVER ()';
+
+                const innerIndent = lineIndent + '    ';
+                const clauses = [];
+                let remaining = trimmed;
+
+                const clauseRe = /\b(PARTITION BY|ORDER BY|ROWS BETWEEN|RANGE BETWEEN|ROWS |RANGE )\b/gi;
+                const positions = [];
+                let m;
+                while ((m = clauseRe.exec(remaining)) !== null) {
+                    positions.push({ index: m.index, keyword: m[1].toUpperCase().trim() });
+                }
+
+                if (positions.length === 0) return match;
+
+                for (let p = 0; p < positions.length; p++) {
+                    const start = positions[p].index;
+                    const end = p + 1 < positions.length ? positions[p + 1].index : remaining.length;
+                    clauses.push(remaining.slice(start, end).trim());
+                }
+
+                return 'OVER (\n'
+                    + clauses.map(c => innerIndent + c).join('\n')
+                    + '\n' + lineIndent + ')';
+            }
+        )];
+    }).join('\n');
+}
+
 function formatSQL(sql) {
     const unionAdj = detectUnionCommentAdjacency(sql);
 
@@ -552,6 +657,8 @@ function formatSQL(sql) {
     });
 
     result = result.replace(/\s+/g, ' ').trim();
+
+    result = replaceOverBlocks(result, saved);
 
     result = result.replace(/\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|ILIKE|BETWEEN|IS|NULL|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|ON|USING|WITH|AS|DISTINCT|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|ALL|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|ALTER|DROP|TABLE|VIEW|INDEX|EXISTS|CASE|WHEN|THEN|ELSE|END|RETURNING|PARTITION|OVER|WINDOW|ASC|DESC|NULLS|FIRST|LAST|TRUE|FALSE|INTERVAL|MICROSECOND|SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR|SECOND_MICROSECOND|MINUTE_MICROSECOND|MINUTE_SECOND|HOUR_MICROSECOND|HOUR_SECOND|HOUR_MINUTE|DAY_MICROSECOND|DAY_SECOND|DAY_MINUTE|DAY_HOUR|YEAR_MONTH|POWER|ROW|JSON|QUALIFY|TABLESAMPLE|PIVOT|UNPIVOT|STRUCT|ARRAY|UNNEST|TIMESTAMP|DATETIME|TIME|FOLLOWING|PRECEDING|UNBOUNDED|ROWS|RANGE|IGNORE|RESPECT|LATERAL|RECURSIVE|MATCH|AGAINST|REGEXP|RLIKE|EXPLAIN|ANALYZE|TRUNCATE|REPLACE|ROLLUP|CUBE|GROUPING|SEPARATOR|MERGE|MATCHED|ESCAPE|COLLATE|BINARY|STRAIGHT_JOIN|WITHIN|DUPLICATE|KEY)\b/gi, keyword => keyword.toUpperCase());
 
@@ -624,7 +731,11 @@ function formatSQL(sql) {
     result = expandBracketedConditions(lines.join('\n'));
     result = formatInlineCaseExpressions(result);
     result = formatCTEBlocks(result);
-    result = placeStandaloneOpaqueLines(restoreOpaqueRegions(result, saved), saved);
+    result = restoreOpaqueRegions(result, saved);
+    while (/\x00\d+\x00/.test(result)) result = restoreOpaqueRegions(result, saved);
+    result = placeStandaloneOpaqueLines(result, saved);
+    result = formatOverClauses(result);
+    result = formatInlineCaseExpressions(result);
     result = placeJinjaControlTagsOnOwnLines(result);
     result = splitWhereHavingConditions(result);
     result = expandBracketedConditions(result);
