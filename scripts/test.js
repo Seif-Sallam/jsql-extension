@@ -751,7 +751,7 @@ const semanticHighlightCases = [
         ].join('\n'),
         metadata: createEmptySchemaMetadata(),
         expectedTables: ['jobs'],
-        expectedColumns: [],
+        expectedColumns: ['ref'],
     },
     {
         name: 'highlights CTE name and CTE alias column dot-access',

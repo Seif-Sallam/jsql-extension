@@ -1376,39 +1376,52 @@ function activate(context) {
                 const textBeforeWord = lineText.slice(0, wordRange.start.character);
                 const qualifierMatch = QUALIFIER_CONTEXT_RE.exec(textBeforeWord);
 
+                // --- CTE column: jump to where the column is defined in the CTE body ---
+                const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
+                const cteAliasMap = new Map();
+                for (const [cteName] of cteSchema) cteAliasMap.set(cteName, cteName);
+                const cteTblAliasRe2 = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+                let cm;
+                while ((cm = cteTblAliasRe2.exec(content)) !== null) {
+                    const tbl = cm[1].toLowerCase();
+                    const alias = cm[2].toLowerCase();
+                    if (cteSchema.has(tbl) && !ALL_SQL_KEYWORDS.has(cm[2].toUpperCase()))
+                        cteAliasMap.set(alias, tbl);
+                }
+
+                // Build set of all CTE column names for bare reference lookup
+                const allCteColumns = new Set();
+                for (const cols of cteSchema.values()) {
+                    for (const col of cols.keys()) allCteColumns.add(col);
+                }
+
+                if (qualifierMatch) {
+                    const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
+                    const cteName = cteAliasMap.get(qualifier);
+                    if (cteName) {
+                        const cols = cteSchema.get(cteName);
+                        const offset = cols?.get(word);
+                        if (offset !== undefined) {
+                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + offset));
+                        }
+                    }
+                } else if (allCteColumns.has(word)) {
+                    // Bare CTE column: find which CTE owns it and jump there
+                    for (const [cteName, cols] of cteSchema) {
+                        const offset = cols.get(word);
+                        if (offset !== undefined) {
+                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + offset));
+                        }
+                    }
+                }
+
                 // --- Column: jump to the FROM/JOIN where it comes from ---
                 const isColumn = schemaMetadata.columns.has(word) &&
                     (qualifierMatch || (!schemaMetadata.tables.has(word) && !aliasMap.has(word)));
 
                 if (isColumn) {
-                    const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
-
-                    // Build CTE alias map for this block
-                    const cteAliasMap = new Map();
-                    for (const [cteName] of cteSchema) cteAliasMap.set(cteName, cteName);
-                    const cteTblAliasRe2 = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
-                    let cm;
-                    while ((cm = cteTblAliasRe2.exec(content)) !== null) {
-                        const tbl = cm[1].toLowerCase();
-                        const alias = cm[2].toLowerCase();
-                        if (cteSchema.has(tbl) && !ALL_SQL_KEYWORDS.has(cm[2].toUpperCase()))
-                            cteAliasMap.set(alias, tbl);
-                    }
-
                     if (qualifierMatch) {
                         const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
-
-                        // CTE column: jump to where the alias is defined in the CTE body
-                        const cteName = cteAliasMap.get(qualifier);
-                        if (cteName) {
-                            const cols = cteSchema.get(cteName);
-                            const offset = cols?.get(word);
-                            if (offset !== undefined) {
-                                return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + offset));
-                            }
-                        }
-
-                        // Schema column: jump to FROM/JOIN of the resolved table
                         const sourceRef = aliasMap.get(qualifier) || null;
                         if (sourceRef) {
                             return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + sourceRef.tableStart));

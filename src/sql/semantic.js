@@ -625,6 +625,32 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         }
     }
 
+    // Bare CTE column pass — color unqualified identifiers that match CTE column names
+    // Only outside CTE bodies (inside CTE bodies, columns belong to the source tables)
+    const allCteColumns = new Set();
+    for (const cols of cteSchema.values()) {
+        for (const col of cols.keys()) allCteColumns.add(col);
+    }
+    const cteBodyRanges = findCTEDefinitions(sql, opaque).map(d => ({ start: d.bodyStart, end: d.bodyEnd }));
+    if (allCteColumns.size > 0) {
+        const bareCteRe = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
+        while ((match = bareCteRe.exec(sql)) !== null) {
+            const normalized = match[1].toLowerCase();
+            if (!allCteColumns.has(normalized)) continue;
+            if (ALL_SQL_KEYWORDS.has(match[1].toUpperCase())) continue;
+            const start = match.index;
+            const end = start + match[1].length;
+            // Skip identifiers inside CTE bodies
+            if (cteBodyRanges.some(r => start >= r.start && end <= r.end)) continue;
+            if (rangeOverlapsOpaque(opaque, start, end)) continue;
+            let overlaps = false;
+            for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+            if (overlaps) continue;
+            addUniqueRange(columnRanges, seenColumns, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+        }
+    }
+
     // Schema metadata pass — color identifiers known from table definitions
     const identRe = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
     while ((match = identRe.exec(sql)) !== null) {
