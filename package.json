@@ -2,7 +2,7 @@
   "name": "jsql-syntax",
   "displayName": "JSql Syntax Highlighting",
   "description": "SQL + Jinja2 syntax highlighting for JSql query patterns in Python",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local",
   "license": "MIT",
   "scripts": {
