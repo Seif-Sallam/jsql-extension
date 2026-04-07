@@ -1584,6 +1584,15 @@ function activate(context) {
                     return cteHover(cteRef, `alias for CTE \`${cteRef}\``);
                 }
 
+                // Bare CTE column hover (before table check — CTE columns take priority)
+                for (const [cteName, cols] of cteSchema) {
+                    if (cols.has(word)) {
+                        const md = new vscode.MarkdownString();
+                        md.appendMarkdown(`**${word}** *(column of CTE \`${cteName}\`)*`);
+                        return new vscode.Hover(md, wordRange);
+                    }
+                }
+
                 // Hovering over a table name
                 if (schemaMetadata.tables.has(word)) {
                     return tableHover(word, 'table');
@@ -1593,15 +1602,6 @@ function activate(context) {
                 const ref = aliasMap.get(word);
                 if (ref && schemaMetadata.tables.has(ref.normalizedName)) {
                     return tableHover(ref.normalizedName, `alias for ${ref.tableName}`);
-                }
-
-                // Bare CTE column hover
-                for (const [cteName, cols] of cteSchema) {
-                    if (cols.has(word)) {
-                        const md = new vscode.MarkdownString();
-                        md.appendMarkdown(`**${word}** *(column of CTE \`${cteName}\`)*`);
-                        return new vscode.Hover(md, wordRange);
-                    }
                 }
 
                 // Unqualified schema column — filter to tables actually used in this query
