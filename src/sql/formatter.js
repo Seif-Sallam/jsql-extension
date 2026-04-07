@@ -329,7 +329,7 @@ function placeStandaloneOpaqueLines(sql, saved) {
             const standaloneText = saved[+match[1]].text.trim();
 
             if (before.trim()) out.push(before);
-            out.push(isJinjaControlTag(standaloneText) ? standaloneText : (before.trim() ? '' : leadingIndent) + standaloneText);
+            out.push(isJinjaControlTag(standaloneText) ? standaloneText : leadingIndent + standaloneText);
             if (after) queue.unshift(leadingIndent + after);
         }
     }
