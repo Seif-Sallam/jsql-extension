@@ -22,6 +22,7 @@ const {
     detectMissingSelectCommas,
 } = require('./sql/diagnostics');
 const {
+    findCTEDefinitions,
     findCTENames,
     findSemanticEntityRanges,
     findSemanticWarnings,
@@ -1447,6 +1448,15 @@ function activate(context) {
                     return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + ref.tableStart));
                 }
 
+                // --- CTE name: jump to WITH definition ---
+                if (cteNames.has(word)) {
+                    const defs = findCTEDefinitions(content);
+                    const def = defs.find(d => d.cteName === word);
+                    if (def) {
+                        return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + def.nameStart));
+                    }
+                }
+
                 // --- Bare table name: jump to __tablename__ in model file ---
                 if (!schemaMetadata.tables.has(word)) return null;
 
@@ -1484,10 +1494,37 @@ function activate(context) {
                 if (!wordRange) return null;
                 const word = doc.getText(wordRange).toLowerCase();
 
-                // Build alias map for this SQL block
+                // Build alias map and CTE schema for this SQL block
                 const content = text.slice(sqlRange.start, sqlRange.end);
                 const cteNames = findCTENames(content);
                 const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
+                const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
+
+                // Build CTE alias map (alias → cteName)
+                const cteAliasMap = new Map();
+                for (const [cteName] of cteSchema) cteAliasMap.set(cteName, cteName);
+                const cteTblAliasRe3 = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+                let hm;
+                while ((hm = cteTblAliasRe3.exec(content)) !== null) {
+                    const tbl = hm[1].toLowerCase();
+                    const alias = hm[2].toLowerCase();
+                    if (cteSchema.has(tbl) && !ALL_SQL_KEYWORDS.has(hm[2].toUpperCase()))
+                        cteAliasMap.set(alias, tbl);
+                }
+
+                // Helper: render a CTE definition as a hover
+                function cteHover(cteName, label) {
+                    const cols = cteSchema.get(cteName);
+                    const md = new vscode.MarkdownString();
+                    md.appendMarkdown(`**${cteName}** *(${label})*\n\n`);
+                    if (cols && cols.size > 0) {
+                        md.appendMarkdown('| Column |\n|---|\n');
+                        for (const col of [...cols.keys()].sort()) {
+                            md.appendMarkdown(`| \`${col}\` |\n`);
+                        }
+                    }
+                    return new vscode.Hover(md, wordRange);
+                }
 
                 // Helper: render a table definition as a hover
                 function tableHover(tableName, label) {
@@ -1512,7 +1549,19 @@ function activate(context) {
 
                 if (qualifierMatch) {
                     const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
-                    // Resolve alias or direct table name
+
+                    // CTE column hover: show CTE name and column
+                    const cteName = cteAliasMap.get(qualifier);
+                    if (cteName) {
+                        const cols = cteSchema.get(cteName);
+                        if (cols?.has(word)) {
+                            const md = new vscode.MarkdownString();
+                            md.appendMarkdown(`**${word}** *(column of CTE \`${cteName}\`)*`);
+                            return new vscode.Hover(md, wordRange);
+                        }
+                    }
+
+                    // Schema column hover
                     const ref = aliasMap.get(qualifier);
                     const tableName = ref ? ref.normalizedName : (schemaMetadata.tables.has(qualifier) ? qualifier : null);
                     if (tableName && schemaMetadata.columns.has(word)) {
@@ -1522,6 +1571,17 @@ function activate(context) {
                         return new vscode.Hover(md, wordRange);
                     }
                     return null;
+                }
+
+                // Hovering over a CTE name
+                if (cteSchema.has(word)) {
+                    return cteHover(word, 'CTE');
+                }
+
+                // Hovering over a CTE alias
+                const cteRef = cteAliasMap.get(word);
+                if (cteRef && cteSchema.has(cteRef)) {
+                    return cteHover(cteRef, `alias for CTE \`${cteRef}\``);
                 }
 
                 // Hovering over a table name
@@ -1535,7 +1595,16 @@ function activate(context) {
                     return tableHover(ref.normalizedName, `alias for ${ref.tableName}`);
                 }
 
-                // Unqualified column — filter to tables actually used in this query
+                // Bare CTE column hover
+                for (const [cteName, cols] of cteSchema) {
+                    if (cols.has(word)) {
+                        const md = new vscode.MarkdownString();
+                        md.appendMarkdown(`**${word}** *(column of CTE \`${cteName}\`)*`);
+                        return new vscode.Hover(md, wordRange);
+                    }
+                }
+
+                // Unqualified schema column — filter to tables actually used in this query
                 if (schemaMetadata.columns.has(word)) {
                     const tablesInQuery = new Set([...aliasMap.values()].map(r => r.normalizedName));
                     let entries = [];
@@ -1545,7 +1614,6 @@ function activate(context) {
                         const type = schemaMetadata.columnTypes.get(tableName)?.get(word) || '—';
                         entries.push({ table: tableName, type });
                     }
-                    // Fall back to all tables if no query tables matched
                     if (entries.length === 0) {
                         for (const [tableName, cols] of schemaMetadata.tableColumns.entries()) {
                             if (!cols.has(word)) continue;

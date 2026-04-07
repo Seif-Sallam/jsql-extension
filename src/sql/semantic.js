@@ -732,6 +732,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
 }
 
 module.exports = {
+    findCTEDefinitions,
     findCTENames,
     findQualifiedReferences,
     findSemanticEntityRanges,
