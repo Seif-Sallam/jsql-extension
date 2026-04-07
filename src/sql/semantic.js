@@ -577,6 +577,55 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         for (let i = start; i < end; i++) occupied.add(i);
     }
 
+    // CTE column coloring — qualifier.col where qualifier → CTE with known columns
+    // Runs BEFORE schema metadata pass so CTE columns take priority over table name collisions
+    const cteSchema = extractCTEColumns(sql, opaque);
+    const cteAliasMap = new Map(); // alias/cteName -> cteName
+    for (const [cteName] of cteSchema) {
+        cteAliasMap.set(cteName, cteName);
+    }
+    const cteNamesSet = new Set(cteSchema.keys());
+    const cteTblAliasRe = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
+    while ((match = cteTblAliasRe.exec(sql)) !== null) {
+        const tbl = match[1].toLowerCase();
+        const alias = match[2].toLowerCase();
+        if (cteNamesSet.has(tbl) && !ALL_SQL_KEYWORDS.has(match[2].toUpperCase())) {
+            cteAliasMap.set(alias, tbl);
+        }
+    }
+    if (cteAliasMap.size > 0) {
+        const qualColRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+        while ((match = qualColRe.exec(sql)) !== null) {
+            const qualifier = match[1].toLowerCase();
+            const col = match[2].toLowerCase();
+            const cteName = cteAliasMap.get(qualifier);
+            if (!cteName) continue;
+            const cols = cteSchema.get(cteName);
+            if (!cols?.has(col)) continue;
+            // Color the qualifier as an alias
+            const qStart = match.index;
+            const qEnd = qStart + match[1].length;
+            if (!rangeOverlapsOpaque(opaque, qStart, qEnd)) {
+                let qOverlaps = false;
+                for (let i = qStart; i < qEnd; i++) { if (occupied.has(i)) { qOverlaps = true; break; } }
+                if (!qOverlaps) {
+                    addUniqueRange(aliasRanges, seenAliases, qStart, qEnd);
+                    for (let i = qStart; i < qEnd; i++) occupied.add(i);
+                }
+            }
+            // Color the column
+            const start = match.index + match[1].length + 1;
+            const end = start + match[2].length;
+            if (rangeOverlapsOpaque(opaque, start, end)) continue;
+            let overlaps = false;
+            for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+            if (overlaps) continue;
+            addUniqueRange(columnRanges, seenColumns, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+        }
+    }
+
+    // Schema metadata pass — color identifiers known from table definitions
     const identRe = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
     while ((match = identRe.exec(sql)) !== null) {
         const start = match.index;
@@ -650,44 +699,6 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
                 addUniqueRange(colAliasRanges, seenColAliases, start, end);
                 for (let i = start; i < end; i++) occupied.add(i);
             }
-        }
-    }
-
-    // CTE column coloring — qualifier.col where qualifier → CTE with known columns
-    const cteSchema = extractCTEColumns(sql, opaque);
-    const cteAliasMap = new Map(); // alias/cteName -> cteName
-    for (const [cteName] of cteSchema) {
-        cteAliasMap.set(cteName, cteName);
-    }
-    // Also map table aliases that point to CTEs
-    for (const [key, ref] of aliasRanges.reduce((m, r) => m, new Map())) { /* no-op */ }
-    // Build from aliasMap (re-derive from sql)
-    const cteNamesSet = new Set(cteSchema.keys());
-    const cteTblAliasRe = /\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
-    while ((match = cteTblAliasRe.exec(sql)) !== null) {
-        const tbl = match[1].toLowerCase();
-        const alias = match[2].toLowerCase();
-        if (cteNamesSet.has(tbl) && !ALL_SQL_KEYWORDS.has(match[2].toUpperCase())) {
-            cteAliasMap.set(alias, tbl);
-        }
-    }
-    if (cteAliasMap.size > 0) {
-        const qualColRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
-        while ((match = qualColRe.exec(sql)) !== null) {
-            const qualifier = match[1].toLowerCase();
-            const col = match[2].toLowerCase();
-            const cteName = cteAliasMap.get(qualifier);
-            if (!cteName) continue;
-            const cols = cteSchema.get(cteName);
-            if (!cols?.has(col)) continue;
-            const start = match.index + match[1].length + 1; // offset of col after the dot
-            const end = start + match[2].length;
-            if (rangeOverlapsOpaque(opaque, start, end)) continue;
-            let overlaps = false;
-            for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
-            if (overlaps) continue;
-            addUniqueRange(columnRanges, seenColumns, start, end);
-            for (let i = start; i < end; i++) occupied.add(i);
         }
     }
 
