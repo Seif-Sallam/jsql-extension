@@ -512,8 +512,25 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     }
 
     // Derived table (subquery) aliases — ) AS alias or ) alias
+    // Only match when ) closes a subquery (SELECT/WITH inside), not a function call
     const derivedAliasHighlightRe = /\)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
     while ((match = derivedAliasHighlightRe.exec(sql)) !== null) {
+        const closePos = match.index;
+        // Find the matching opening paren
+        let depth = 1;
+        let k = closePos - 1;
+        while (k >= 0 && depth > 0) {
+            if (!opaque[k]) {
+                if (sql[k] === ')') depth++;
+                else if (sql[k] === '(') depth--;
+            }
+            if (depth > 0) k--;
+        }
+        // Only treat as derived table alias if the paren contains a subquery
+        if (k >= 0) {
+            const afterOpen = sql.slice(k + 1, closePos).trimStart();
+            if (!/^(SELECT|WITH)\b/i.test(afterOpen)) continue;
+        }
         const alias = match[1];
         if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
         const start = match.index + match[0].length - alias.length;
@@ -615,7 +632,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         colAliasRanges.map(r => sql.slice(r.start, r.end).toLowerCase())
     );
     if (colAliasNames.size > 0) {
-        const clauseColAliasRe = /\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|QUALIFY)\b([\s\S]*?)(?=\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|QUALIFY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|$))/gi;
+        const clauseColAliasRe = /\b(?:ORDER\s+BY|GROUP\s+BY|HAVING|QUALIFY)\b([\s\S]*?)(?=\b(?:SELECT|FROM|WHERE|ORDER\s+BY|GROUP\s+BY|HAVING|QUALIFY|LIMIT|OFFSET|UNION|INTERSECT|EXCEPT|INSERT|UPDATE|DELETE|$))/gi;
         let clauseMatch;
         while ((clauseMatch = clauseColAliasRe.exec(sql)) !== null) {
             const clauseBody = clauseMatch[1];

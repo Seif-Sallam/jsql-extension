@@ -758,6 +758,31 @@ const semanticHighlightCases = [
         expectedColumns: ['id', 'name'],
     },
     {
+        name: 'does not misclassify AS alias after function call as derived table alias',
+        metadataFiles: [[
+            'class User(Model):',
+            "    __tablename__ = 'users'",
+            '    country_name = sa.Column(VARCHAR(255))',
+        ].join('\n')],
+        input: 'WITH cte AS (\n    SELECT UPPER(name) AS country_name FROM users\n)\nSELECT c.country_name FROM cte c',
+        expectedTables: ['cte', 'users'],
+        expectedColumns: ['country_name'],
+    },
+    {
+        name: 'CTE columns via qualified access are highlighted as columns not aliases',
+        input: [
+            'WITH stats AS (',
+            '    SELECT id_user, COUNT(*) AS total',
+            '    FROM orders GROUP BY id_user',
+            ')',
+            'SELECT s.total, s.id_user',
+            'FROM stats s',
+        ].join('\n'),
+        metadata: createEmptySchemaMetadata(),
+        expectedTables: ['orders', 'stats'],
+        expectedColumns: ['id_user', 'total'],
+    },
+    {
         name: 'highlights loaded table and column names separately',
         metadataFiles: [[
             'class UserTaskStep(Model):',
