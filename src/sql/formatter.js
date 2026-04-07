@@ -482,7 +482,11 @@ function formatParenthesizedSubqueries(sql) {
         const lineStart = result.lastIndexOf('\n', start) + 1;
         const baseIndent = (result.slice(lineStart, start).match(/^([ \t]*)/) || ['', ''])[1];
         const innerIndent = baseIndent + '    ';
-        const inner = result.slice(start + 1, end).trim();
+        let inner = result.slice(start + 1, end).trim();
+
+        // Recursively format any nested subqueries within this one
+        inner = formatParenthesizedSubqueries(inner);
+
         const dedented = dedentLines(inner.split('\n').map(line => line.trimEnd()));
         const replacement = '(\n'
             + dedented.map(line => (line ? innerIndent + line : '')).join('\n')
