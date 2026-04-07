@@ -802,6 +802,31 @@ function formatSQL(sql) {
     result = expandBracketedConditions(result);
     result = normalizeJinjaControlIndentation(result);
     result = formatParenthesizedSubqueries(result);
+
+    // Post-subquery CASE cleanup: split THEN/ELSE/END that ended up on the same line as )
+    result = result.replace(/^([ \t]*\))\s+(THEN\b.*)/gim, (_, closeParen, rest) => {
+        const indent = closeParen.match(/^([ \t]*)/)[1];
+        // Split THEN ... ELSE ... END onto separate lines
+        const parts = rest.split(/\b(ELSE|END)\b/i);
+        const lines = [closeParen];
+        let remaining = rest;
+        const thenMatch = /^(THEN\b[^\n]*?)(?=\s+ELSE\b|\s+END\b|$)/i.exec(remaining);
+        if (thenMatch) {
+            lines.push(indent + thenMatch[1].trim());
+            remaining = remaining.slice(thenMatch[0].length).trim();
+        }
+        const elseMatch = /^(ELSE\b[^\n]*?)(?=\s+END\b|$)/i.exec(remaining);
+        if (elseMatch) {
+            lines.push(indent + elseMatch[1].trim());
+            remaining = remaining.slice(elseMatch[0].length).trim();
+        }
+        const endMatch = /^(END\b.*)/i.exec(remaining);
+        if (endMatch) {
+            lines.push(indent + endMatch[1].trim());
+        }
+        return lines.join('\n');
+    });
+
     result = formatInsertValues(result);
     result = formatSetAssignments(result);
 
