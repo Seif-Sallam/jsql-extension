@@ -427,7 +427,7 @@ function indentJinjaBlockContent(lines) {
         if (insideBlock && trimmed) {
             const lineIndent = lines[i].match(/^([ \t]*)/)[1];
             if (lineIndent.length <= blockIndent.length) {
-                result.push(blockIndent + '  ' + trimmed);
+                result.push(blockIndent + '    ' + trimmed);
             } else {
                 result.push(lines[i]);
             }
