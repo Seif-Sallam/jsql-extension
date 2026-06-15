@@ -180,6 +180,8 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildSemant
         // Skip UPDATE that is part of ON DUPLICATE KEY UPDATE
         if (/^UPDATE$/i.test(match[1]) && /\bKEY\s*$/i.test(sql.slice(0, match.index))) continue;
         const tableName = match[2];
+        // Skip LATERAL keyword after JOIN/FROM — the actual table is a derived subquery
+        if (/^LATERAL$/i.test(tableName)) continue;
         const tableStart = match.index + match[0].indexOf(tableName);
         const tableEnd = tableStart + tableName.length;
         if (rangeOverlapsOpaque(opaque, tableStart, tableEnd)) continue;
@@ -194,6 +196,10 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildSemant
                 alias = null;
                 aliasStart = -1;
                 aliasEnd = -1;
+                // The regex greedily consumed the next keyword (e.g. JOIN on the
+                // following line) as an alias candidate. Rewind past the table so
+                // the next iteration can match the skipped clause.
+                tableRefRe.lastIndex = tableEnd;
             }
         }
 
@@ -245,7 +251,7 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildSemant
 }
 
 function hasDerivedTableReferences(sql, opaque = buildSemanticOpaqueMask(sql)) {
-    const derivedTableRe = /\b(?:FROM|JOIN)\s*\(/gi;
+    const derivedTableRe = /\b(?:FROM|JOIN)\s*(?:LATERAL\s*)?\(/gi;
     let match;
 
     while ((match = derivedTableRe.exec(sql)) !== null) {
@@ -466,6 +472,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
 
     while ((match = tableRefRe.exec(sql)) !== null) {
         if (/^UPDATE\s/i.test(match[0]) && isOnDuplicateKeyUpdate(match.index)) continue;
+        if (/^LATERAL$/i.test(match[1])) continue; // LATERAL after JOIN/FROM introduces a derived subquery, not a table
         const start = match.index + match[0].length - match[1].length;
         const end = start + match[1].length;
         if (rangeOverlapsOpaque(opaque, start, end)) continue;
@@ -500,7 +507,14 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     );
     while ((match = tableAliasRe.exec(sql)) !== null) {
         const alias = match[1];
-        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) continue;
+        if (ALL_SQL_KEYWORDS.has(alias.toUpperCase())) {
+            // The regex swallowed the next clause keyword (e.g. JOIN/WHERE on
+            // the following line) as an alias. Rewind so we don't skip the
+            // actual next clause.
+            const aliasStart = match.index + match[0].length - alias.length;
+            tableAliasRe.lastIndex = aliasStart;
+            continue;
+        }
         const start = match.index + match[0].length - alias.length;
         const end = start + alias.length;
         if (rangeOverlapsOpaque(opaque, start, end)) continue;
@@ -513,6 +527,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
 
     // Derived table (subquery) aliases — ) AS alias or ) alias
     // Only match when ) closes a subquery (SELECT/WITH inside), not a function call
+    const derivedAliasNames = new Set();
     const derivedAliasHighlightRe = /\)\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*)\b/gi;
     while ((match = derivedAliasHighlightRe.exec(sql)) !== null) {
         const closePos = match.index;
@@ -541,6 +556,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
         if (overlaps) continue;
         addUniqueRange(aliasRanges, seenAliases, start, end);
         for (let i = start; i < end; i++) occupied.add(i);
+        derivedAliasNames.add(alias.toLowerCase());
     }
 
     // Column aliases — remaining AS aliases (table aliases already occupied above)
@@ -698,6 +714,23 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
             for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
             if (overlaps) continue;
             addUniqueRange(aliasRanges, seenAliases, start, end);
+            for (let i = start; i < end; i++) occupied.add(i);
+        }
+    }
+
+    // Column parts of derived-alias.column references — color the column after a derived (subquery) alias qualifier
+    if (derivedAliasNames.size > 0) {
+        const qualColRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+        while ((match = qualColRe.exec(sql)) !== null) {
+            if (!derivedAliasNames.has(match[1].toLowerCase())) continue;
+            const start = match.index + match[1].length + 1; // position after the dot
+            const end = start + match[2].length;
+            if (rangeOverlapsOpaque(opaque, start, end)) continue;
+            if (ALL_SQL_KEYWORDS.has(match[2].toUpperCase())) continue;
+            let overlaps = false;
+            for (let i = start; i < end; i++) { if (occupied.has(i)) { overlaps = true; break; } }
+            if (overlaps) continue;
+            addUniqueRange(columnRanges, seenColumns, start, end);
             for (let i = start; i < end; i++) occupied.add(i);
         }
     }

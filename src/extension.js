@@ -17,6 +17,7 @@ const {
     SPECIFIC_PATTERNS_SQL,
 } = require('./sql/highlighting');
 const {
+    detectAliasedTableUsedByName,
     detectAmbiguousColumns,
     detectDuplicateAliases,
     detectMissingSelectCommas,
@@ -542,6 +543,16 @@ function activate(context) {
             }
 
             for (const issue of detectAmbiguousColumns(content, schemaMetadata)) {
+                const range = new vscode.Range(
+                    doc.positionAt(start + issue.start),
+                    doc.positionAt(start + issue.end)
+                );
+                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Error);
+                diag.source = 'jsql';
+                docDiagnostics.push(diag);
+            }
+
+            for (const issue of detectAliasedTableUsedByName(content, schemaMetadata)) {
                 const range = new vscode.Range(
                     doc.positionAt(start + issue.start),
                     doc.positionAt(start + issue.end)
@@ -1836,6 +1847,7 @@ module.exports = {
     buildFormattedSQLBlock,
     createEmptySchemaMetadata,
     deactivate,
+    detectAliasedTableUsedByName,
     detectAmbiguousColumns,
     detectDuplicateAliases,
     detectMissingSelectCommas,

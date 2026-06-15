@@ -728,7 +728,7 @@ function formatSQL(sql) {
         '\n$1'
     );
 
-    result = result.replace(/\b((?:LEFT|RIGHT|INNER|CROSS|FULL|NATURAL)(?: OUTER)? )?JOIN\b/g, match => '\n' + match.trimStart());
+    result = result.replace(/\b((?:LEFT|RIGHT|INNER|CROSS|FULL|NATURAL)(?: OUTER)? )?JOIN( LATERAL)?\b/g, match => '\n' + match.trimStart());
 
     {
         let rebuilt = '';

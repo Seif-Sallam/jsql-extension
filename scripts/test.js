@@ -1063,6 +1063,35 @@ const semanticWarningCases = [
         ].join('\n'),
         expectedMessages: [],
     },
+    {
+        name: 'does not swallow the next JOIN when a preceding table has no alias',
+        metadataFiles: [[
+            'class User(Model):',
+            "    __tablename__ = 'user'",
+            '    id_user = sa.Column(INT, primary_key=True)',
+            '    id_business_unit = sa.Column(INT)',
+            '',
+            'class UserContract(Model):',
+            "    __tablename__ = 'user_contract'",
+            '    id_user = sa.Column(INT)',
+            '    user_contract_nr = sa.Column(VARCHAR(255))',
+            '    is_active = sa.Column(INT)',
+            '',
+            'class BusinessUnit(Model):',
+            "    __tablename__ = 'business_unit'",
+            '    id_business_unit = sa.Column(INT)',
+            '    is_external = sa.Column(INT)',
+        ].join('\n')],
+        input: [
+            'SELECT uc.user_contract_nr FROM user',
+            '                JOIN user_contract uc USING (id_user)',
+            '                JOIN business_unit bu USING (id_business_unit)',
+            '                WHERE user.id_user = :id_user',
+            '                AND uc.is_active = 1',
+            '                AND bu.is_external = 1',
+        ].join('\n'),
+        expectedMessages: [],
+    },
 ];
 
 const commaWarningCases = [
@@ -1330,6 +1359,8 @@ const { detectDuplicateAliases } = loadExtensionInternals();
 
 const { detectAmbiguousColumns } = loadExtensionInternals();
 
+const { detectAliasedTableUsedByName } = loadExtensionInternals();
+
 const ambiguousColumnCases = [
     {
         name: 'flags unqualified column that exists in two joined tables',
@@ -1413,6 +1444,53 @@ const ambiguousColumnCases = [
             ')',
         ].join('\n'),
         expectedCount: 0,
+    },
+];
+
+const aliasedTableShadowCases = [
+    {
+        name: 'flags bare table name when the table has an alias',
+        input: [
+            'SELECT uc.user_contract_nr',
+            'FROM user u',
+            'JOIN user_contract uc USING (id_user)',
+            'JOIN business_unit bu USING (id_business_unit)',
+            'WHERE user.id_user = :id_user',
+            'AND uc.is_active = 1',
+            'AND bu.is_external = 1',
+        ].join('\n'),
+        expectedMessages: [
+            'Table "user" is aliased as "u" — use "u" instead of the bare table name.',
+        ],
+    },
+    {
+        name: 'does not flag when no alias is defined',
+        input: [
+            'SELECT user.id_user',
+            'FROM user',
+            'WHERE user.id_user = :id_user',
+        ].join('\n'),
+        expectedMessages: [],
+    },
+    {
+        name: 'does not flag the table name in the FROM/JOIN clause itself',
+        input: [
+            'SELECT u.id_user',
+            'FROM user u',
+            'JOIN user_contract uc ON uc.id_user = u.id_user',
+        ].join('\n'),
+        expectedMessages: [],
+    },
+    {
+        name: 'flags multiple bare-name usages of an aliased table',
+        input: [
+            'SELECT user.id_user, user.name',
+            'FROM user u',
+        ].join('\n'),
+        expectedMessages: [
+            'Table "user" is aliased as "u" — use "u" instead of the bare table name.',
+            'Table "user" is aliased as "u" — use "u" instead of the bare table name.',
+        ],
     },
 ];
 
@@ -1737,6 +1815,17 @@ function runDuplicateAliasCases() {
     }
 }
 
+function runAliasedTableShadowCases() {
+    for (const testCase of aliasedTableShadowCases) {
+        const messages = detectAliasedTableUsedByName(testCase.input).map(d => d.message);
+        assert.strictEqual(
+            JSON.stringify(messages),
+            JSON.stringify(testCase.expectedMessages),
+            `detectAliasedTableUsedByName failed: ${testCase.name}`
+        );
+    }
+}
+
 function main() {
     runFormatCases();
     runCteNameCases();
@@ -1753,9 +1842,10 @@ function main() {
     runCommaWarningCases();
     runAmbiguousColumnCases();
     runDuplicateAliasCases();
+    runAliasedTableShadowCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + cteNameCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    console.log(`Passed ${formatCases.length + cteNameCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + aliasedTableShadowCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
 }
 
 main();

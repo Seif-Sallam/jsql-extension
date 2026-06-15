@@ -10,6 +10,7 @@ function loadExtensionInternals() {
     return {
         buildFormattedSQLBlock: formatter.buildFormattedSQLBlock,
         createEmptySchemaMetadata: metadata.createEmptySchemaMetadata,
+        detectAliasedTableUsedByName: diagnostics.detectAliasedTableUsedByName,
         detectAmbiguousColumns: diagnostics.detectAmbiguousColumns,
         detectDuplicateAliases: diagnostics.detectDuplicateAliases,
         detectMissingSelectCommas: diagnostics.detectMissingSelectCommas,

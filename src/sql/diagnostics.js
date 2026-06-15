@@ -206,10 +206,59 @@ function detectAmbiguousColumns(sql, schemaMetadata = createEmptySchemaMetadata(
 }
 
 module.exports = {
+    detectAliasedTableUsedByName,
     detectAmbiguousColumns,
     detectDuplicateAliases,
     detectMissingSelectCommas,
 };
+
+function detectAliasedTableUsedByName(sql, schemaMetadata = createEmptySchemaMetadata()) {
+    const diagnostics = [];
+    const opaque = buildSemanticOpaqueMask(sql);
+    const cteNames = findCTENames(sql, opaque);
+    const { tableReferences } = findTableReferences(sql, schemaMetadata, cteNames, opaque);
+
+    // Map normalized table name -> alias for tables that introduced an alias.
+    // If the same table appears multiple times with different aliases we only
+    // need to know that *some* alias was given; the bare name is still wrong.
+    const aliasedTables = new Map();
+    for (const ref of tableReferences) {
+        if (ref.alias && !ref.isDerived) {
+            if (!aliasedTables.has(ref.normalizedName)) {
+                aliasedTables.set(ref.normalizedName, ref.alias);
+            }
+        }
+    }
+    if (!aliasedTables.size) return diagnostics;
+
+    // Collect positions occupied by table-reference tokens so we don't flag
+    // the table name in "FROM user u" itself.
+    const refOccupied = new Set();
+    for (const ref of tableReferences) {
+        for (let i = ref.tableStart; i < ref.tableEnd; i++) refOccupied.add(i);
+    }
+
+    const qualRe = /\b([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_*][A-Za-z0-9_]*/g;
+    let m;
+    while ((m = qualRe.exec(sql)) !== null) {
+        const qualifier = m[1];
+        const normalized = qualifier.toLowerCase();
+        if (!aliasedTables.has(normalized)) continue;
+        const start = m.index;
+        const end = start + qualifier.length;
+        if (rangeOverlapsOpaque(opaque, start, end)) continue;
+        if (refOccupied.has(start)) continue;
+        const alias = aliasedTables.get(normalized);
+        diagnostics.push({
+            start,
+            end,
+            message: `Table "${qualifier}" is aliased as "${alias}" — use "${alias}" instead of the bare table name.`,
+            severity: 'error',
+        });
+    }
+
+    return diagnostics;
+}
 
 function detectDuplicateAliases(sql) {
     const diagnostics = [];
