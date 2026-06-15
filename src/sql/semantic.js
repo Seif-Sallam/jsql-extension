@@ -171,7 +171,7 @@ function findTableReferences(sql, schemaMetadata, cteNames, opaque = buildSemant
     const tableReferences = [];
     const aliasMap = new Map();
     const tableRefRe = new RegExp(
-        `\\b(FROM|JOIN|UPDATE|INTO|TABLE|DELETE\\s+FROM)\\s+(${SQL_IDENTIFIER_PATH_RE_SRC})(?:\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*))?`,
+        `\\b(FROM|JOIN|UPDATE|FOR\\s+UPDATE\\s+OF|INTO|TABLE|DELETE\\s+FROM)\\s+(${SQL_IDENTIFIER_PATH_RE_SRC})(?:\\s+(?:AS\\s+)?([A-Za-z_][A-Za-z0-9_]*))?`,
         'gi'
     );
     let match;
@@ -464,7 +464,7 @@ function findSemanticEntityRanges(sql, schemaMetadata = createEmptySchemaMetadat
     const seenAliases = new Set();
     const occupied = new Set();
     const tableRefRe = new RegExp(
-        `\\b(?:FROM|JOIN|UPDATE|INTO|TABLE|DELETE\\s+FROM)\\s+(${SQL_IDENTIFIER_PATH_RE_SRC})`,
+        `\\b(?:FROM|JOIN|UPDATE|FOR\\s+UPDATE\\s+OF|INTO|TABLE|DELETE\\s+FROM)\\s+(${SQL_IDENTIFIER_PATH_RE_SRC})`,
         'gi'
     );
     let match;

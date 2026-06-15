@@ -287,6 +287,14 @@ const formatCases = [
             'FROM employees',
         ].join('\n'),
     },
+    {
+        name: 'uppercases FOR UPDATE OF lock clause keywords',
+        input: 'select * from users for update of users',
+        expected: [
+            'SELECT *',
+            'FROM users FOR UPDATE OF users',
+        ].join('\n'),
+    },
 ];
 
 const rangeCases = [
@@ -435,6 +443,20 @@ const completionCases = [
         ],
     },
     {
+        name: 'suggests FOR as a SQL keyword',
+        prefix: 'fo',
+        expectedIncludes: [
+            { label: 'FOR', kind: 'keyword' },
+        ],
+    },
+    {
+        name: 'suggests OF as a SQL keyword',
+        prefix: 'of',
+        expectedIncludes: [
+            { label: 'OF', kind: 'keyword' },
+        ],
+    },
+    {
         name: 'suggests SQL functions for matching prefixes',
         prefix: 'co',
         expectedIncludes: [
@@ -488,6 +510,16 @@ const tableCompletionContextCases = [
             keyword: 'DELETE FROM',
             prefix: 'us',
             prefixStart: 'DELETE FROM '.length,
+        },
+    },
+    {
+        name: 'detects table completion context after FOR UPDATE OF',
+        input: 'SELECT * FROM account FOR UPDATE OF us',
+        cursorOffset: 'SELECT * FROM account FOR UPDATE OF us'.length,
+        expected: {
+            keyword: 'FOR UPDATE OF',
+            prefix: 'us',
+            prefixStart: 'SELECT * FROM account FOR UPDATE OF '.length,
         },
     },
     {
@@ -742,6 +774,17 @@ const semanticHighlightCases = [
         ].join('\n'),
         metadata: createEmptySchemaMetadata(),
         expectedTables: ['account', 'user'],
+        expectedColumns: [],
+    },
+    {
+        name: 'highlights table references after FOR UPDATE OF',
+        input: [
+            'SELECT a.id_user',
+            'FROM account a',
+            'FOR UPDATE OF account',
+        ].join('\n'),
+        metadata: createEmptySchemaMetadata(),
+        expectedTables: ['account'],
         expectedColumns: [],
     },
     {
