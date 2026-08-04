@@ -102,10 +102,19 @@ Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) and run:
   - Formats the SQL block **your cursor is currently inside** (inside a recognized triple-quoted SQL string).
 - **`JSql: Select Theme`** (`jsqlSyntax.selectTheme`)
   - Previews available highlight themes and saves your selection.
+- **`JSql: Copy Query with Parameters`** (`jsqlSyntax.copyWithParams`)
+  - Renders the JSql block **your cursor is currently inside** using the real `jsql`
+    Python library (so `{% if %}` / `{% for %}` / `{{ }}` and `:something_list` params
+    are evaluated exactly as at runtime), prompts you for each Jinja variable and
+    `:param`, inlines the values, and copies a runnable query to the clipboard.
+  - Each value you enter is remembered per parameter name (per workspace) and
+    pre-filled the next time the same name appears.
+  - Requires a Python interpreter with `jsql` installed — see `jsqlSyntax.pythonPath`.
 
 ### Configuration
 
 - **`jsqlSyntax.theme`**: `"dracula" | "monokai" | "one-dark"` (default: `"dracula"`)
+- **`jsqlSyntax.pythonPath`**: path to a Python interpreter that has `jsql` installed, used by **Copy Query with Parameters**. When empty (default), the extension auto-detects: the workspace `.venv`, then the VS Code Python extension's interpreter, then `python3`/`python` on `PATH`.
 - **`jsqlSyntax.tableDefinitionFiles`**: array of workspace-relative glob patterns for Python model files such as `tables.py`. The extension parses `__tablename__` and `sa.Column(...)` definitions and uses them to color known SQL tables and columns. These globs are searched only inside the open workspace folders.
 - **`jsqlSyntax.semanticWarnings`**: `true | false` (default: `true`). Enables schema-aware warnings for unknown tables and invalid qualified columns.
 

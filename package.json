@@ -2,7 +2,7 @@
   "name": "jsql-syntax",
   "displayName": "JSql Syntax Highlighting",
   "description": "SQL + Jinja2 syntax highlighting for JSql query patterns in Python",
-  "version": "0.3.0",
+  "version": "0.6.2",
   "publisher": "local",
   "license": "MIT",
   "scripts": {
@@ -43,8 +43,30 @@
       {
         "command": "jsqlSyntax.discoverSchemaSources",
         "title": "JSql: Discover Schema Sources"
+      },
+      {
+        "command": "jsqlSyntax.copyWithParams",
+        "title": "JSql: Copy Query with Parameters"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "jsqlSyntaxParams",
+          "title": "JSql Parameters",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "jsqlSyntaxParams": [
+        {
+          "type": "webview",
+          "id": "jsqlSyntax.paramsView",
+          "name": "Query Parameters"
+        }
+      ]
+    },
     "walkthroughs": [
       {
         "id": "jsqlGettingStarted",
@@ -155,6 +177,12 @@
           "scope": "resource",
           "default": true,
           "description": "Enable schema-aware SQL warnings for unknown tables and invalid qualified columns using the loaded table definition files."
+        },
+        "jsqlSyntax.pythonPath": {
+          "type": "string",
+          "scope": "resource",
+          "default": "",
+          "description": "Path to a Python interpreter that has the `jsql` library installed, used by \"Copy Query with Parameters\" to render templates. When empty, the extension auto-detects: the workspace `.venv`, then the VS Code Python extension's interpreter, then `python3`/`python` on PATH."
         }
       }
     }

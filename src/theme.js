@@ -17,6 +17,7 @@ const THEMES = {
         json_path: { color: '#E5C07B' },
         operator: { color: '#8BE9FD' },
         boolean: { color: '#FF8585', fontWeight: 'bold' },
+        fragment: { color: '#BD93F9', backgroundColor: 'rgba(189,147,249,0.13)', border: '1px solid rgba(189,147,249,0.45)', borderRadius: '3px' },
     },
     monokai: {
         identifier: { color: '#B0B8C8' },
@@ -34,6 +35,7 @@ const THEMES = {
         json_path: { color: '#FD971F' },
         operator: { color: '#F92672' },
         boolean: { color: '#66D9E8', fontWeight: 'bold' },
+        fragment: { color: '#AE81FF', backgroundColor: 'rgba(174,129,255,0.13)', border: '1px solid rgba(174,129,255,0.45)', borderRadius: '3px' },
     },
     'one-dark': {
         identifier: { color: '#9DA5B4' },
@@ -51,6 +53,7 @@ const THEMES = {
         json_path: { color: '#E5C07B' },
         operator: { color: '#56B6C2' },
         boolean: { color: '#E06C75', fontWeight: 'bold' },
+        fragment: { color: '#56B6C2', backgroundColor: 'rgba(86,182,194,0.13)', border: '1px solid rgba(86,182,194,0.45)', borderRadius: '3px' },
     },
 };
 

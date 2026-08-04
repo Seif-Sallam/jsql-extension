@@ -960,6 +960,11 @@ function findSQLRanges(text) {
     const triple = /('''|""")/g;
     const sqlStart = /^\s*(?:(?:--[^\n]*|\/\*[\s\S]*?\*\/)\s*)*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP)\b/i;
     const dialectHint = /^--(bq|spanner|sql)\s*(?:\n|$)/i;
+    // A Python string-concatenation seam splicing a SQL fragment variable into
+    // the middle of a query:  ''' + CATEGORY_ENTITY_JOINS + '''  (quote style of
+    // the continuation string may differ from the opening one). The pieces are
+    // stitched into one logical query so the whole thing reads as complete.
+    const seamAhead = /^(\s*\+\s*)([A-Za-z_][A-Za-z0-9_.]*)(\s*\+\s*)('''|""")/;
     let match;
     while ((match = triple.exec(text)) !== null) {
         const quote = match[1];
@@ -977,15 +982,53 @@ function findSQLRanges(text) {
             const hintMatch = dialectHint.exec(content);
             const hintValue = hintMatch ? hintMatch[1].toLowerCase() : 'sql';
             const dialect = (hintValue === 'bq' || hintValue === 'spanner') ? 'bq' : 'sql';
-            ranges.push({
-                start,
-                end,
-                fullStart: match.index,
-                fullEnd: end + quote.length,
-                quote,
-                dialect,
-            });
-            triple.lastIndex = end + quote.length;
+
+            // Walk any continuation seams, collecting every spliced segment under
+            // one shared group. Each segment is still its own contiguous range so
+            // highlighting/offset math stays per-segment.
+            const group = { fullStart: match.index, fullEnd: 0, segments: [], seams: [], dialect };
+            const groupRanges = [];
+            let segStart = start;
+            let segEnd = end;
+            let segQuote = quote;
+            let segFullStart = match.index;
+
+            for (;;) {
+                const segFullEnd = segEnd + segQuote.length;
+                group.segments.push({ start: segStart, end: segEnd });
+                groupRanges.push({
+                    start: segStart,
+                    end: segEnd,
+                    fullStart: segFullStart,
+                    fullEnd: segFullEnd,
+                    quote: segQuote,
+                    dialect,
+                    group,
+                });
+
+                const seam = seamAhead.exec(text.slice(segFullEnd));
+                if (!seam) {
+                    group.fullEnd = segFullEnd;
+                    break;
+                }
+                const nameStart = segFullEnd + seam[1].length;
+                const nextQuote = seam[4];
+                const nextOpen = nameStart + seam[2].length + seam[3].length;
+                const nextContentStart = nextOpen + nextQuote.length;
+                const nextEnd = text.indexOf(nextQuote, nextContentStart);
+                if (nextEnd === -1) {
+                    group.fullEnd = segFullEnd;
+                    break;
+                }
+                group.seams.push({ name: seam[2], start: nameStart, end: nameStart + seam[2].length });
+                segStart = nextContentStart;
+                segEnd = nextEnd;
+                segQuote = nextQuote;
+                segFullStart = nextOpen;
+            }
+
+            ranges.push(...groupRanges);
+            triple.lastIndex = group.fullEnd;
         }
     }
     return ranges;

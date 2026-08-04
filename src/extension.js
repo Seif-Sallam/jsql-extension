@@ -1,7 +1,12 @@
 'use strict';
 
 const vscode = require('vscode');
+const cp = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
+const { extractBindParams, buildParamItems, buildRenderPayload } = require('./sql/params');
+const { resolveFragment, findFragmentImportModule, buildStitchedTemplate, buildStitchedView } = require('./sql/fragments');
 const {
     buildFormattedSQLBlock,
     detectUnionCommentAdjacency,
@@ -52,7 +57,91 @@ const {
     findTableNameCompletions,
 } = require('./sql/completions');
 const { THEMES, buildDecorations, createBracketDecorations } = require('./theme');
+
+// Cached reads of fragment source files, invalidated by mtime so edits to an
+// imported constants module are picked up without restarting the extension.
+const fragmentFileCache = new Map(); // fsPath -> { mtimeMs, text }
+function readFragmentFile(fsPath) {
+    try {
+        const st = fs.statSync(fsPath);
+        const hit = fragmentFileCache.get(fsPath);
+        if (hit && hit.mtimeMs === st.mtimeMs) return hit.text;
+        const fileText = fs.readFileSync(fsPath, 'utf8');
+        fragmentFileCache.set(fsPath, { mtimeMs: st.mtimeMs, text: fileText });
+        return fileText;
+    } catch {
+        return null;
+    }
+}
+
+// Turns a Python module spec from an import into candidate file paths on disk.
+// Relative specs (leading dots) resolve deterministically from the importing
+// file's directory. Absolute dotted specs are matched as a path suffix while
+// walking up the directory tree, which covers the common src-root / package
+// layouts without needing to know the project's import roots.
+function moduleSpecToFiles(moduleSpec, docPath) {
+    if (!docPath) return [];
+    const dotsMatch = /^(\.*)(.*)$/.exec(moduleSpec);
+    const dots = dotsMatch[1].length;
+    const parts = dotsMatch[2] ? dotsMatch[2].split('.') : [];
+    const files = [];
+    const add = base => {
+        const p = path.join(base, ...parts);
+        files.push(p + '.py');
+        files.push(path.join(p, '__init__.py'));
+    };
+    if (dots > 0) {
+        let base = path.dirname(docPath);
+        for (let i = 1; i < dots && base; i++) base = path.dirname(base);
+        if (parts.length) add(base);
+    } else if (parts.length) {
+        let dir = path.dirname(docPath);
+        for (let i = 0; i < 16 && dir && dir !== path.dirname(dir); i++) {
+            add(dir);
+            dir = path.dirname(dir);
+        }
+    }
+    return files;
+}
+
+// Builds a fragment resolver bound to one document: a name -> SQL string (or
+// null). It first looks for a same-file `NAME = '''...'''` assignment, then
+// follows `from <module> import NAME` statements into the imported file. Results
+// are memoized per call so repeated lookups (decorations, hover, etc.) are cheap.
+function makeFragmentResolver(text, docPath) {
+    const memo = new Map();
+    return name => {
+        if (memo.has(name)) return memo.get(name);
+        let value = resolveFragment(text, name);
+        if (value == null) {
+            outer:
+            for (const cand of findFragmentImportModule(text, name)) {
+                for (const file of moduleSpecToFiles(cand.module, docPath)) {
+                    const fileText = readFragmentFile(file);
+                    if (fileText == null) continue;
+                    const resolved = resolveFragment(fileText, cand.sourceName);
+                    if (resolved != null) { value = resolved; break outer; }
+                }
+            }
+        }
+        memo.set(name, value);
+        return value;
+    };
+}
+
+// Resolves the logical (possibly fragment-spliced) query under a document offset
+// to its stitched view, so schema-aware providers analyze the whole query and
+// can map content offsets back to real document positions.
+function resolveStitchedQuery(doc, offset) {
+    const text = doc.getText();
+    const sqlRange = findSQLRanges(text).find(r => r.group.fullStart <= offset && offset <= r.group.fullEnd);
+    if (!sqlRange) return null;
+    const resolve = makeFragmentResolver(text, doc.uri && doc.uri.fsPath);
+    const view = buildStitchedView(text, sqlRange.group, resolve);
+    return { sqlRange, view };
+}
 const { createWelcomeHtml } = require('./ui/welcome');
+const { createParamsPanelHtml } = require('./ui/paramsPanel');
 
 // Only explicit non-alpha trigger chars — letters trigger automatically via quickSuggestions
 const SQL_COMPLETION_TRIGGER_CHARS = [' ', '_', '.'];
@@ -428,102 +517,72 @@ function activate(context) {
         const bracketErrorRanges = [];
         const sqlRanges = findSQLRanges(text);
 
-        for (const { start, end, dialect } of sqlRanges) {
-            const content = text.slice(start, end);
+        // Analyze each logical query once over its stitched content, so aliases,
+        // tables and columns resolve across spliced fragments (the FROM/JOIN that
+        // define an alias may sit in a different segment than its references).
+        const analyzedGroups = new Set();
+        const resolveFragmentForDoc = makeFragmentResolver(text, doc.uri && doc.uri.fsPath);
+        for (const sqlRange of sqlRanges) {
+            const group = sqlRange.group;
+            if (analyzedGroups.has(group)) continue;
+            analyzedGroups.add(group);
+
+            const dialect = group.dialect;
+            const view = buildStitchedView(text, group, resolveFragmentForDoc);
+            const content = view.content;
             const patterns = dialect === 'bq' ? SPECIFIC_PATTERNS_BQ : SPECIFIC_PATTERNS_SQL;
 
+            // Map a [vStart, vEnd) span in stitched content to a colored range,
+            // skipping spans that land inside an inlined fragment (no real text).
+            const pushColor = (key, vStart, vEnd) => {
+                const real = view.toReal(vStart, vEnd);
+                if (!real) return false;
+                collected[key].push(new vscode.Range(doc.positionAt(real.start), doc.positionAt(real.end)));
+                return true;
+            };
+            const pushDiag = (vStart, vEnd, message, severity) => {
+                const real = view.toReal(vStart, vEnd);
+                if (!real) return null;
+                const range = new vscode.Range(doc.positionAt(real.start), doc.positionAt(real.end));
+                const diag = new vscode.Diagnostic(range, message, severity);
+                diag.source = 'jsql';
+                docDiagnostics.push(diag);
+                return range;
+            };
+
             const occupied = new Set();
+            const isOccupied = (a, b) => { for (let i = a; i < b; i++) if (occupied.has(i)) return true; return false; };
+            const markOccupied = (a, b) => { for (let i = a; i < b; i++) occupied.add(i); };
+
             for (const { re, key } of patterns) {
                 re.lastIndex = 0;
                 let m;
                 while ((m = re.exec(content)) !== null) {
-                    let overlaps = false;
-                    for (let i = m.index; i < m.index + m[0].length; i++) {
-                        if (occupied.has(i)) { overlaps = true; break; }
-                    }
-                    if (overlaps) continue;
-                    const absStart = start + m.index;
-                    const absEnd = absStart + m[0].length;
-                    collected[key].push(new vscode.Range(doc.positionAt(absStart), doc.positionAt(absEnd)));
-                    for (let i = m.index; i < m.index + m[0].length; i++) occupied.add(i);
+                    const s = m.index, e = m.index + m[0].length;
+                    if (isOccupied(s, e)) continue;
+                    if (pushColor(key, s, e)) markOccupied(s, e);
                 }
             }
 
             const semanticRanges = findSemanticEntityRanges(content, schemaMetadata);
-            for (const { start: relStart, end: relEnd } of semanticRanges.tableRanges) {
-                let overlaps = false;
-                for (let i = relStart; i < relEnd; i++) {
-                    if (occupied.has(i)) { overlaps = true; break; }
+            const colorKinds = [
+                ['table', semanticRanges.tableRanges],
+                ['column', semanticRanges.columnRanges],
+                ['alias', semanticRanges.aliasRanges],
+                ['col_alias', semanticRanges.colAliasRanges],
+            ];
+            for (const [key, entityRanges] of colorKinds) {
+                for (const { start: vStart, end: vEnd } of entityRanges) {
+                    if (isOccupied(vStart, vEnd)) continue;
+                    if (pushColor(key, vStart, vEnd)) markOccupied(vStart, vEnd);
                 }
-                if (overlaps) continue;
-
-                const absStart = start + relStart;
-                collected.table.push(new vscode.Range(
-                    doc.positionAt(absStart),
-                    doc.positionAt(absStart + (relEnd - relStart))
-                ));
-                for (let i = relStart; i < relEnd; i++) occupied.add(i);
-            }
-
-            for (const { start: relStart, end: relEnd } of semanticRanges.columnRanges) {
-                let overlaps = false;
-                for (let i = relStart; i < relEnd; i++) {
-                    if (occupied.has(i)) { overlaps = true; break; }
-                }
-                if (overlaps) continue;
-
-                const absStart = start + relStart;
-                collected.column.push(new vscode.Range(
-                    doc.positionAt(absStart),
-                    doc.positionAt(absStart + (relEnd - relStart))
-                ));
-                for (let i = relStart; i < relEnd; i++) occupied.add(i);
-            }
-
-            for (const { start: relStart, end: relEnd } of semanticRanges.aliasRanges) {
-                let overlaps = false;
-                for (let i = relStart; i < relEnd; i++) {
-                    if (occupied.has(i)) { overlaps = true; break; }
-                }
-                if (overlaps) continue;
-
-                const absStart = start + relStart;
-                collected.alias.push(new vscode.Range(
-                    doc.positionAt(absStart),
-                    doc.positionAt(absStart + (relEnd - relStart))
-                ));
-                for (let i = relStart; i < relEnd; i++) occupied.add(i);
-            }
-
-            for (const { start: relStart, end: relEnd } of semanticRanges.colAliasRanges) {
-                let overlaps = false;
-                for (let i = relStart; i < relEnd; i++) {
-                    if (occupied.has(i)) { overlaps = true; break; }
-                }
-                if (overlaps) continue;
-
-                const absStart = start + relStart;
-                collected.col_alias.push(new vscode.Range(
-                    doc.positionAt(absStart),
-                    doc.positionAt(absStart + (relEnd - relStart))
-                ));
-                for (let i = relStart; i < relEnd; i++) occupied.add(i);
             }
 
             IDENT_RE.lastIndex = 0;
             let m;
             while ((m = IDENT_RE.exec(content)) !== null) {
-                let overlaps = false;
-                for (let i = m.index; i < m.index + m[0].length; i++) {
-                    if (occupied.has(i)) { overlaps = true; break; }
-                }
-                if (!overlaps) {
-                    const absStart = start + m.index;
-                    collected.identifier.push(new vscode.Range(
-                        doc.positionAt(absStart),
-                        doc.positionAt(absStart + m[0].length)
-                    ));
-                }
+                const s = m.index, e = m.index + m[0].length;
+                if (!isOccupied(s, e)) pushColor('identifier', s, e);
             }
 
             // Spell-check: ALL-CAPS words not inside strings/comments
@@ -535,100 +594,67 @@ function activate(context) {
                 if (ALL_SQL_KEYWORDS.has(word)) continue;
                 const suggestion = findClosestKeyword(word);
                 if (!suggestion) continue;
-                const absStart = start + cw.index;
-                const range = new vscode.Range(doc.positionAt(absStart), doc.positionAt(absStart + word.length));
-                const diag = new vscode.Diagnostic(range, `Unknown keyword "${word}" — did you mean ${suggestion}?`, vscode.DiagnosticSeverity.Warning);
-                diag.source = 'jsql';
-                docDiagnostics.push(diag);
+                pushDiag(cw.index, cw.index + word.length, `Unknown keyword "${word}" — did you mean ${suggestion}?`, vscode.DiagnosticSeverity.Warning);
             }
 
-            for (const issue of detectAmbiguousColumns(content, schemaMetadata)) {
-                const range = new vscode.Range(
-                    doc.positionAt(start + issue.start),
-                    doc.positionAt(start + issue.end)
-                );
-                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Error);
-                diag.source = 'jsql';
-                docDiagnostics.push(diag);
-            }
+            for (const issue of detectAmbiguousColumns(content, schemaMetadata))
+                pushDiag(issue.start, issue.end, issue.message, vscode.DiagnosticSeverity.Error);
 
-            for (const issue of detectAliasedTableUsedByName(content, schemaMetadata)) {
-                const range = new vscode.Range(
-                    doc.positionAt(start + issue.start),
-                    doc.positionAt(start + issue.end)
-                );
-                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Error);
-                diag.source = 'jsql';
-                docDiagnostics.push(diag);
-            }
+            for (const issue of detectAliasedTableUsedByName(content, schemaMetadata))
+                pushDiag(issue.start, issue.end, issue.message, vscode.DiagnosticSeverity.Error);
 
-            for (const issue of detectDuplicateAliases(content)) {
-                const range = new vscode.Range(
-                    doc.positionAt(start + issue.start),
-                    doc.positionAt(start + issue.end)
-                );
-                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
-                diag.source = 'jsql';
-                docDiagnostics.push(diag);
-            }
+            for (const issue of detectDuplicateAliases(content))
+                pushDiag(issue.start, issue.end, issue.message, vscode.DiagnosticSeverity.Warning);
 
-            for (const issue of detectMissingSelectCommas(content)) {
-                const range = new vscode.Range(
-                    doc.positionAt(start + issue.start),
-                    doc.positionAt(start + issue.end)
-                );
-                const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
-                diag.source = 'jsql';
-                docDiagnostics.push(diag);
-            }
+            for (const issue of detectMissingSelectCommas(content))
+                pushDiag(issue.start, issue.end, issue.message, vscode.DiagnosticSeverity.Warning);
 
             if (semanticWarningsEnabled()) {
-                for (const issue of findSemanticWarnings(content, schemaMetadata)) {
-                    const range = new vscode.Range(
-                        doc.positionAt(start + issue.start),
-                        doc.positionAt(start + issue.end)
-                    );
-                    const diag = new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Warning);
-                    diag.source = 'jsql';
-                    docDiagnostics.push(diag);
-                }
+                for (const issue of findSemanticWarnings(content, schemaMetadata))
+                    pushDiag(issue.start, issue.end, issue.message, vscode.DiagnosticSeverity.Warning);
             }
 
             for (const idx of findUnmatchedBrackets(content)) {
-                const range = new vscode.Range(
-                    doc.positionAt(start + idx),
-                    doc.positionAt(start + idx + 1)
-                );
-                bracketErrorRanges.push(range);
-                const diag = new vscode.Diagnostic(
-                    range,
-                    'Unmatched bracket in SQL expression.',
-                    vscode.DiagnosticSeverity.Error
-                );
-                diag.source = 'jsql';
-                docDiagnostics.push(diag);
+                const range = pushDiag(idx, idx + 1, 'Unmatched bracket in SQL expression.', vscode.DiagnosticSeverity.Error);
+                if (range) bracketErrorRanges.push(range);
+            }
+        }
+
+        // Spliced fragment variables ( ''' + FRAG + ''' ) rendered as macro chips.
+        const seenGroups = new Set();
+        for (const r of sqlRanges) {
+            if (!r.group || seenGroups.has(r.group)) continue;
+            seenGroups.add(r.group);
+            for (const seam of r.group.seams) {
+                collected.fragment.push(new vscode.Range(doc.positionAt(seam.start), doc.positionAt(seam.end)));
             }
         }
 
         for (const selection of editor.selections) {
             if (!selection.isEmpty) continue;
             const cursorOffset = doc.offsetAt(selection.active);
-            const sqlRange = sqlRanges.find(r => r.start <= cursorOffset && cursorOffset <= r.end);
+            const sqlRange = sqlRanges.find(r => r.group.fullStart <= cursorOffset && cursorOffset <= r.group.fullEnd);
             if (!sqlRange) continue;
 
-            const content = text.slice(sqlRange.start, sqlRange.end);
-            const match = findMatchingBracket(content, cursorOffset - sqlRange.start);
+            const view = buildStitchedView(text, sqlRange.group, resolveFragmentForDoc);
+            const vCursor = view.toVirtual(cursorOffset);
+            if (vCursor < 0) continue;
+            const match = findMatchingBracket(view.content, vCursor);
             if (!match) continue;
             if (typeof match.unmatched === 'number') continue;
 
+            const open = view.toReal(match.start, match.start + 1);
+            const close = view.toReal(match.end, match.end + 1);
+            if (!open || !close) continue;
+
             bracketRanges.push(
                 new vscode.Range(
-                    doc.positionAt(sqlRange.start + match.start),
-                    doc.positionAt(sqlRange.start + match.start + 1)
+                    doc.positionAt(open.start),
+                    doc.positionAt(open.end)
                 ),
                 new vscode.Range(
-                    doc.positionAt(sqlRange.start + match.end),
-                    doc.positionAt(sqlRange.start + match.end + 1)
+                    doc.positionAt(close.start),
+                    doc.positionAt(close.end)
                 )
             );
         }
@@ -683,6 +709,9 @@ function activate(context) {
                 const sqlRanges = findSQLRanges(text);
                 const edits = [];
                 for (const sqlRange of sqlRanges) {
+                    // Queries spliced from Python fragments can't be reflowed
+                    // safely across the concatenation seams — leave them as-is.
+                    if (sqlRange.group && sqlRange.group.segments.length > 1) continue;
                     const replacement = buildFormattedSQLBlock(text, sqlRange);
                     const current = text.slice(replacement.start, replacement.end);
                     if (replacement.formatted === current) continue;
@@ -703,10 +732,15 @@ function activate(context) {
         const doc = editor.document;
         const text = doc.getText();
         const cursorOffset = doc.offsetAt(editor.selection.active);
-        const sqlRange = findSQLRanges(text).find(r => r.fullStart <= cursorOffset && cursorOffset <= r.fullEnd);
+        const sqlRange = findSQLRanges(text).find(r => r.group.fullStart <= cursorOffset && cursorOffset <= r.group.fullEnd);
 
         if (!sqlRange) {
             vscode.window.showInformationMessage('Cursor is not inside a JSql block.');
+            return;
+        }
+
+        if (sqlRange.group.segments.length > 1) {
+            vscode.window.showInformationMessage('JSql: This query is spliced from Python fragments and cannot be auto-formatted.');
             return;
         }
 
@@ -722,6 +756,312 @@ function activate(context) {
         );
         vscode.workspace.applyEdit(edit);
     }, null, context.subscriptions);
+
+    // ─── Copy Query with Parameters ─────────────────────────────────────────────
+    // Renders a JSql template via the real `jsql` Python library (Jinja + list
+    // params) and inlines :param values, producing a runnable, copyable query.
+
+    let cachedPython = null; // resolved interpreter for this session
+
+    function safeExists(p) {
+        try { return fs.existsSync(p); } catch { return false; }
+    }
+
+    function resolvePythonCandidates() {
+        const candidates = [];
+        const configured = cfg().get('pythonPath', '');
+        if (configured && configured.trim()) candidates.push(configured.trim());
+
+        for (const f of vscode.workspace.workspaceFolders || []) {
+            candidates.push(path.join(f.uri.fsPath, '.venv', 'bin', 'python'));
+            candidates.push(path.join(f.uri.fsPath, '.venv', 'Scripts', 'python.exe'));
+        }
+
+        try {
+            const ext = vscode.extensions.getExtension('ms-python.python');
+            const getDetails = ext && ext.isActive && ext.exports?.settings?.getExecutionDetails;
+            if (getDetails) {
+                const ws = (vscode.workspace.workspaceFolders || [])[0];
+                const details = ext.exports.settings.getExecutionDetails(ws ? ws.uri : undefined);
+                if (Array.isArray(details?.execCommand)) candidates.push(...details.execCommand);
+            }
+        } catch { /* the Python extension is optional */ }
+
+        candidates.push('python3', 'python');
+
+        const seen = new Set();
+        return candidates.filter(c => c && !seen.has(c) && seen.add(c));
+    }
+
+    function runPythonHelper(pythonCmd, mode, payload) {
+        return new Promise(resolve => {
+            const helper = path.join(__dirname, 'py', 'jsql_render.py');
+            let stdout = '';
+            let stderr = '';
+            let proc;
+            try {
+                proc = cp.spawn(pythonCmd, [helper, mode], { stdio: ['pipe', 'pipe', 'pipe'] });
+            } catch (err) {
+                resolve({ ok: false, error: String(err && err.message || err) });
+                return;
+            }
+            proc.on('error', err => resolve({ ok: false, error: String(err && err.message || err) }));
+            proc.stdout.on('data', d => { stdout += d; });
+            proc.stderr.on('data', d => { stderr += d; });
+            proc.on('close', code => {
+                let parsed = null;
+                try { parsed = JSON.parse(stdout); } catch { /* non-JSON output */ }
+                if (parsed && parsed.error) { resolve({ ok: false, error: parsed.error }); return; }
+                if (code !== 0 || !parsed) {
+                    resolve({ ok: false, error: (stderr || stdout || `exited with code ${code}`).trim() });
+                    return;
+                }
+                resolve({ ok: true, data: parsed });
+            });
+            proc.stdin.write(JSON.stringify(payload));
+            proc.stdin.end();
+        });
+    }
+
+    // Try interpreter candidates until one runs the helper successfully, then
+    // cache it for the rest of the session.
+    async function runResolved(mode, payload) {
+        const candidates = cachedPython ? [cachedPython] : resolvePythonCandidates();
+        let lastError = 'No Python interpreter with jsql was found. Set "jsqlSyntax.pythonPath".';
+        for (const cmd of candidates) {
+            if (path.isAbsolute(cmd) && !safeExists(cmd)) continue;
+            const res = await runPythonHelper(cmd, mode, payload);
+            if (res.ok) { cachedPython = cmd; return res; }
+            lastError = res.error || lastError;
+        }
+        cachedPython = null;
+        return { ok: false, error: lastError };
+    }
+
+    vscode.commands.registerCommand('jsqlSyntax.copyWithParams', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.languageId !== 'python') {
+            vscode.window.showInformationMessage('JSql: Open a Python file and place the cursor inside a JSql block.');
+            return;
+        }
+
+        const doc = editor.document;
+        const text = doc.getText();
+        const cursorOffset = doc.offsetAt(editor.selection.active);
+        const sqlRange = findSQLRanges(text).find(r => r.group.fullStart <= cursorOffset && cursorOffset <= r.group.fullEnd);
+        if (!sqlRange) {
+            vscode.window.showInformationMessage('JSql: Cursor is not inside a JSql block.');
+            return;
+        }
+
+        const template = buildStitchedTemplate(text, sqlRange.group, makeFragmentResolver(text, doc.uri && doc.uri.fsPath));
+        const bindParams = extractBindParams(template);
+        const hasJinja = /\{\{|\{%|\{#/.test(template);
+
+        // Nothing to render or evaluate — copy the query verbatim.
+        if (!bindParams.length && !hasJinja) {
+            await vscode.env.clipboard.writeText(template);
+            vscode.window.showInformationMessage('JSql: Query copied (no parameters found).');
+            return;
+        }
+
+        let jinjaVars = [];
+        if (hasJinja) {
+            const discovered = await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Window, title: 'JSql: analyzing query…' },
+                () => runResolved('discover', { template })
+            );
+            if (!discovered.ok) { vscode.window.showErrorMessage(`JSql: ${discovered.error}`); return; }
+            jinjaVars = discovered.data.jinja_vars || [];
+        }
+
+        // Prompt order: Jinja control variables first, then bind params, deduped.
+        const items = buildParamItems(jinjaVars, bindParams);
+
+        const store = { ...context.workspaceState.get('jsqlSyntax.paramValues', {}) };
+        const values = {};
+        for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            const prior = store[it.name];
+            const value = await vscode.window.showInputBox({
+                title: `JSql parameter ${i + 1}/${items.length}`,
+                prompt: it.isList ? `${it.name} — JSON array, e.g. [1, 2, 3]` : `Value for ${it.name}`,
+                value: prior !== undefined ? String(prior) : '',
+                ignoreFocusOut: true,
+            });
+            if (value === undefined) {
+                vscode.window.showInformationMessage('JSql: Copy cancelled.');
+                return;
+            }
+            store[it.name] = value;
+            values[it.name] = value;
+        }
+        await context.workspaceState.update('jsqlSyntax.paramValues', store);
+
+        const rendered = await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Window, title: 'JSql: rendering query…' },
+            () => runResolved('render', buildRenderPayload(template, items, values))
+        );
+        if (!rendered.ok) { vscode.window.showErrorMessage(`JSql: ${rendered.error}`); return; }
+
+        await vscode.env.clipboard.writeText(rendered.data.query);
+        vscode.window.showInformationMessage('JSql: Query with parameters copied to clipboard.');
+    }, null, context.subscriptions);
+
+    // ─── Query Parameters sidebar view ──────────────────────────────────────────
+    // A WebviewView listing the parameters of the JSql block under the cursor.
+    // The extension owns the state; the webview is a thin renderer.
+
+    let paramsView = null;
+    let paramsKey = null;       // uri#blockOffset — identifies the current block
+    let paramsSig = null;       // template text of the current block
+    let paramsItems = [];       // [{ name, isList, isJinja, isBind }]
+    let paramsValues = {};      // name -> string (current, possibly unsaved)
+    let paramsRefreshTimer = null;
+    let paramsRefreshToken = 0;
+
+    function getActiveBlock() {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.languageId !== 'python') return null;
+        const doc = editor.document;
+        const text = doc.getText();
+        const offset = doc.offsetAt(editor.selection.active);
+        const sqlRange = findSQLRanges(text).find(r => r.group.fullStart <= offset && offset <= r.group.fullEnd);
+        if (!sqlRange) return null;
+        return {
+            key: `${doc.uri.toString()}#${sqlRange.group.fullStart}`,
+            template: buildStitchedTemplate(text, sqlRange.group, makeFragmentResolver(text, doc.uri && doc.uri.fsPath)),
+        };
+    }
+
+    function postParamsState() {
+        if (!paramsView) return;
+        paramsView.webview.postMessage({
+            type: 'params',
+            items: paramsItems.map(it => ({ name: it.name, isList: it.isList, value: paramsValues[it.name] || '' })),
+        });
+    }
+
+    async function refreshParamsPanel(force) {
+        if (!paramsView || !paramsView.visible) return;
+
+        const block = getActiveBlock();
+        if (!block) {
+            paramsKey = null; paramsSig = null; paramsItems = []; paramsValues = {};
+            paramsView.webview.postMessage({ type: 'noBlock' });
+            return;
+        }
+
+        const sameBlock = block.key === paramsKey;
+        if (sameBlock && block.template === paramsSig && !force) {
+            postParamsState();
+            return;
+        }
+
+        // Preserve in-progress edits while editing the same block; start fresh
+        // (from saved values) when moving to a different block.
+        const prevValues = sameBlock ? paramsValues : {};
+        paramsKey = block.key;
+        paramsSig = block.template;
+
+        const token = ++paramsRefreshToken;
+        paramsView.webview.postMessage({ type: 'loading' });
+
+        const binds = extractBindParams(block.template);
+        let jinjaVars = [];
+        if (/\{\{|\{%|\{#/.test(block.template)) {
+            const res = await runResolved('discover', { template: block.template });
+            if (res.ok) jinjaVars = res.data.jinja_vars || [];
+        }
+        if (token !== paramsRefreshToken) return; // a newer refresh superseded this one
+
+        const items = buildParamItems(jinjaVars, binds);
+
+        const store = context.workspaceState.get('jsqlSyntax.paramValues', {});
+        const values = {};
+        for (const it of items) {
+            if (prevValues[it.name] !== undefined) values[it.name] = prevValues[it.name];
+            else values[it.name] = store[it.name] !== undefined ? String(store[it.name]) : '';
+        }
+
+        paramsItems = items;
+        paramsValues = values;
+        postParamsState();
+    }
+
+    function scheduleParamsRefresh(force) {
+        if (paramsRefreshTimer) clearTimeout(paramsRefreshTimer);
+        paramsRefreshTimer = setTimeout(() => {
+            paramsRefreshTimer = null;
+            refreshParamsPanel(force);
+        }, 120);
+    }
+
+    const paramsProvider = {
+        resolveWebviewView(webviewView) {
+            paramsView = webviewView;
+            webviewView.webview.options = { enableScripts: true };
+            const nonce = Math.random().toString(36).slice(2);
+            webviewView.webview.html = createParamsPanelHtml(nonce);
+
+            webviewView.webview.onDidReceiveMessage(async msg => {
+                if (!msg || !msg.type) return;
+
+                if (msg.type === 'ready') { refreshParamsPanel(true); return; }
+
+                if (msg.type === 'change') { paramsValues[msg.name] = msg.value; return; }
+
+                if (msg.type === 'reset') {
+                    const store = { ...context.workspaceState.get('jsqlSyntax.paramValues', {}) };
+                    for (const it of paramsItems) { paramsValues[it.name] = ''; delete store[it.name]; }
+                    await context.workspaceState.update('jsqlSyntax.paramValues', store);
+                    postParamsState();
+                    return;
+                }
+
+                if (msg.type === 'copyAsIs') {
+                    if (paramsSig == null) return;
+                    await vscode.env.clipboard.writeText(paramsSig);
+                    vscode.window.showInformationMessage('JSql: Query copied (raw, parameters not evaluated).');
+                    return;
+                }
+
+                if (msg.type === 'copy') {
+                    if (paramsSig == null) return;
+                    const rendered = await runResolved('render', buildRenderPayload(paramsSig, paramsItems, paramsValues));
+                    if (!rendered.ok) { vscode.window.showErrorMessage(`JSql: ${rendered.error}`); return; }
+                    await vscode.env.clipboard.writeText(rendered.data.query);
+
+                    // Saving the values happens only on Copy (with parameters).
+                    const store = { ...context.workspaceState.get('jsqlSyntax.paramValues', {}) };
+                    for (const it of paramsItems) store[it.name] = paramsValues[it.name] || '';
+                    await context.workspaceState.update('jsqlSyntax.paramValues', store);
+
+                    vscode.window.showInformationMessage('JSql: Query with parameters copied to clipboard.');
+                    return;
+                }
+            }, null, context.subscriptions);
+
+            webviewView.onDidChangeVisibility(() => {
+                if (webviewView.visible) refreshParamsPanel(true);
+            }, null, context.subscriptions);
+
+            webviewView.onDidDispose(() => {
+                if (paramsView === webviewView) paramsView = null;
+            }, null, context.subscriptions);
+
+            refreshParamsPanel(true);
+        }
+    };
+
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider('jsqlSyntax.paramsView', paramsProvider, {
+            webviewOptions: { retainContextWhenHidden: true }
+        })
+    );
+
+    vscode.window.onDidChangeActiveTextEditor(() => scheduleParamsRefresh(true), null, context.subscriptions);
+    vscode.window.onDidChangeTextEditorSelection(() => scheduleParamsRefresh(false), null, context.subscriptions);
 
     // ─── Schema config helpers ───────────────────────────────────────────────────
 
@@ -1372,15 +1712,18 @@ function activate(context) {
                 const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
-                const sqlRanges = findSQLRanges(text);
-                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
-                if (!sqlRange) return null;
+                const stitched = resolveStitchedQuery(doc, offset);
+                if (!stitched) return null;
+                const { view } = stitched;
+                // Maps a content offset to an in-document position, or null when it
+                // falls inside an inlined fragment (which lives in another variable).
+                const posAt = vOff => { const r = view.toRealOffset(vOff); return r < 0 ? null : doc.positionAt(r); };
 
                 const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
                 if (!wordRange) return null;
                 const word = doc.getText(wordRange).toLowerCase();
 
-                const content = text.slice(sqlRange.start, sqlRange.end);
+                const content = view.content;
                 const cteNames = findCTENames(content);
                 const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
 
@@ -1414,7 +1757,8 @@ function activate(context) {
                         const cols = cteSchema.get(cteName);
                         const offset = cols?.get(word);
                         if (offset !== undefined) {
-                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + offset));
+                            const p = posAt(offset);
+                            if (p) return new vscode.Location(doc.uri, p);
                         }
                     }
                 } else if (allCteColumns.has(word)) {
@@ -1422,7 +1766,8 @@ function activate(context) {
                     for (const [cteName, cols] of cteSchema) {
                         const offset = cols.get(word);
                         if (offset !== undefined) {
-                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + offset));
+                            const p = posAt(offset);
+                            if (p) return new vscode.Location(doc.uri, p);
                         }
                     }
                 }
@@ -1436,7 +1781,8 @@ function activate(context) {
                         const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
                         const sourceRef = aliasMap.get(qualifier) || null;
                         if (sourceRef) {
-                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + sourceRef.tableStart));
+                            const p = posAt(sourceRef.tableStart);
+                            if (p) return new vscode.Location(doc.uri, p);
                         }
                     } else {
                         // Unqualified: find which tables in this query own this column
@@ -1445,7 +1791,8 @@ function activate(context) {
                         );
                         const unique = [...new Map(owningRefs.map(r => [r.normalizedName, r])).values()];
                         if (unique.length === 1) {
-                            return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + unique[0].tableStart));
+                            const p = posAt(unique[0].tableStart);
+                            if (p) return new vscode.Location(doc.uri, p);
                         }
                     }
                     return null;
@@ -1456,7 +1803,8 @@ function activate(context) {
                 // (aliasMap keys both alias and table name)
                 const ref = aliasMap.get(word);
                 if (ref && ref.alias && ref.alias.toLowerCase() === word) {
-                    return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + ref.tableStart));
+                    const p = posAt(ref.tableStart);
+                    if (p) return new vscode.Location(doc.uri, p);
                 }
 
                 // --- CTE name: jump to WITH definition ---
@@ -1464,7 +1812,8 @@ function activate(context) {
                     const defs = findCTEDefinitions(content);
                     const def = defs.find(d => d.cteName === word);
                     if (def) {
-                        return new vscode.Location(doc.uri, doc.positionAt(sqlRange.start + def.nameStart));
+                        const p = posAt(def.nameStart);
+                        if (p) return new vscode.Location(doc.uri, p);
                     }
                 }
 
@@ -1498,15 +1847,30 @@ function activate(context) {
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
                 const sqlRanges = findSQLRanges(text);
-                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
-                if (!sqlRange) return null;
+
+                // Hovering a spliced fragment variable ( ''' + FRAG + ''' )
+                // shows its resolved SQL, or notes it as an unresolved placeholder.
+                for (const r of sqlRanges) {
+                    if (!r.group) continue;
+                    const seam = r.group.seams.find(s => offset >= s.start && offset <= s.end);
+                    if (!seam) continue;
+                    const md = new vscode.MarkdownString();
+                    md.appendMarkdown(`**${seam.name}** *(SQL fragment)*\n\n`);
+                    const resolved = makeFragmentResolver(text, doc.uri && doc.uri.fsPath)(seam.name);
+                    if (resolved != null) md.appendCodeblock(resolved.trim(), 'sql');
+                    else md.appendMarkdown(`_Unresolved (not defined or imported in a reachable module) — treated as a \`{{ ${seam.name} }}\` placeholder._`);
+                    return new vscode.Hover(md, new vscode.Range(doc.positionAt(seam.start), doc.positionAt(seam.end)));
+                }
+
+                const stitched = resolveStitchedQuery(doc, offset);
+                if (!stitched) return null;
 
                 const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
                 if (!wordRange) return null;
                 const word = doc.getText(wordRange).toLowerCase();
 
-                // Build alias map and CTE schema for this SQL block
-                const content = text.slice(sqlRange.start, sqlRange.end);
+                // Build alias map and CTE schema for the whole (possibly spliced) query
+                const content = stitched.view.content;
                 const cteNames = findCTENames(content);
                 const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
                 const { cteSchema } = findSemanticEntityRanges(content, schemaMetadata);
@@ -1654,15 +2018,14 @@ function activate(context) {
                 const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
-                const sqlRanges = findSQLRanges(text);
-                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
-                if (!sqlRange) return null;
+                const stitched = resolveStitchedQuery(doc, offset);
+                if (!stitched) return null;
 
                 const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
                 if (!wordRange) return null;
                 const word = doc.getText(wordRange).toLowerCase();
 
-                const content = text.slice(sqlRange.start, sqlRange.end);
+                const content = stitched.view.content;
                 const cteNames = findCTENames(content);
                 const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
                 const opaque = buildOpaqueMask(content);
@@ -1684,25 +2047,29 @@ function activate(context) {
                 const schemaMetadata = resolveMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
-                const sqlRanges = findSQLRanges(text);
-                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
-                if (!sqlRange) return null;
+                const stitched = resolveStitchedQuery(doc, offset);
+                if (!stitched) return null;
+                const { view } = stitched;
 
                 const wordRange = doc.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
                 if (!wordRange) return null;
                 const word = doc.getText(wordRange).toLowerCase();
 
-                const content = text.slice(sqlRange.start, sqlRange.end);
+                const content = view.content;
                 const opaque = buildOpaqueMask(content);
                 const edit = new vscode.WorkspaceEdit();
 
-                // Find all non-opaque occurrences of the word token in the SQL block
+                // Find all non-opaque occurrences of the word token in the SQL block.
+                // Occurrences that map into an inlined fragment are skipped — that
+                // text belongs to a Python variable defined elsewhere.
                 const re = new RegExp(`\\b${word}\\b`, 'gi');
                 let m;
                 while ((m = re.exec(content)) !== null) {
                     if (rangeOverlapsOpaque(opaque, m.index, m.index + m[0].length)) continue;
-                    const start = doc.positionAt(sqlRange.start + m.index);
-                    const end = doc.positionAt(sqlRange.start + m.index + m[0].length);
+                    const real = view.toReal(m.index, m.index + m[0].length);
+                    if (!real) continue;
+                    const start = doc.positionAt(real.start);
+                    const end = doc.positionAt(real.end);
                     edit.replace(doc.uri, new vscode.Range(start, end), newName);
                 }
 
@@ -1718,9 +2085,8 @@ function activate(context) {
                 const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
-                const sqlRanges = findSQLRanges(text);
-                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
-                if (!sqlRange) return null;
+                const stitched = resolveStitchedQuery(doc, offset);
+                if (!stitched) return null;
 
                 const lineText = doc.lineAt(position).text;
                 const textBefore = lineText.slice(0, position.character);
@@ -1728,7 +2094,7 @@ function activate(context) {
                 if (!qualifierMatch) return null;
 
                 const qualifier = normalizeSqlIdentifier(qualifierMatch[1]);
-                const content = text.slice(sqlRange.start, sqlRange.end);
+                const content = stitched.view.content;
                 const cteNames = findCTENames(content);
                 const { aliasMap } = findTableReferences(content, schemaMetadata, cteNames);
 
@@ -1759,12 +2125,13 @@ function activate(context) {
                 const schemaMetadata = resolveCompletionMetadata(doc);
                 const text = doc.getText();
                 const offset = doc.offsetAt(position);
-                const sqlRanges = findSQLRanges(text);
-                const sqlRange = sqlRanges.find(r => r.start <= offset && offset <= r.end);
-                if (!sqlRange) return null;
+                const stitched = resolveStitchedQuery(doc, offset);
+                if (!stitched) return null;
+                const { view } = stitched;
 
-                const content = text.slice(sqlRange.start, sqlRange.end);
-                const localOffset = offset - sqlRange.start;
+                const content = view.content;
+                const localOffset = view.toVirtual(offset);
+                if (localOffset < 0) return null;
                 const semanticOpaque = buildSemanticOpaqueMask(content);
                 const lexicalOpaque = buildOpaqueMask(content);
                 const tableContext = findTableNameCompletionContext(content, localOffset, semanticOpaque);
@@ -1774,7 +2141,8 @@ function activate(context) {
                     const matches = findTableNameCompletions(tableContext.prefix, schemaMetadata, cteNames, cteSchema);
                     if (!matches.length) return null;
 
-                    const replaceStart = doc.positionAt(sqlRange.start + tableContext.prefixStart);
+                    const realPrefix = view.toRealOffset(tableContext.prefixStart);
+                    const replaceStart = doc.positionAt(realPrefix < 0 ? offset : realPrefix);
                     const replaceRange = new vscode.Range(replaceStart, position);
                     return matches.map(match => {
                         const itemKind = match.kind === 'cte'
@@ -1806,7 +2174,8 @@ function activate(context) {
                 const matches = findSqlWordCompletions(wordContext.prefix);
                 if (!matches.length) return null;
 
-                const prefixStartPos = doc.positionAt(sqlRange.start + wordContext.prefixStart);
+                const realWordPrefix = view.toRealOffset(wordContext.prefixStart);
+                const prefixStartPos = doc.positionAt(realWordPrefix < 0 ? offset : realWordPrefix);
                 const wordPosition = position.character > 0 ? position.translate(0, -1) : position;
                 const wordRange = doc.getWordRangeAtPosition(wordPosition, /[A-Za-z_][A-Za-z0-9_]*/);
                 const replaceRange = wordRange && !wordRange.start.isAfter(position)

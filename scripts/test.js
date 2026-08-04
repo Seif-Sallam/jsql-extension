@@ -20,8 +20,79 @@ const {
     findTableNameCompletions,
     findSqlWordCompletions,
     findMatchingBracket,
-    findUnmatchedBrackets
+    findUnmatchedBrackets,
+    extractBindParams,
+    isListParam,
+    parseParamValue,
+    buildParamItems,
+    buildRenderPayload,
+    resolveFragment,
+    findFragmentImportModule,
+    buildStitchedTemplate,
+    buildStitchedView
 } = loadExtensionInternals();
+
+const paramCases = [
+    {
+        name: 'extracts unique bind params in source order',
+        input: 'SELECT * FROM t WHERE id_user = :id_user AND d = :attendance_date AND id_user = :id_user',
+        expected: ['id_user', 'attendance_date'],
+    },
+    {
+        name: 'ignores ::type casts and params inside strings/comments/jinja',
+        input: "SELECT a::text, ':not_a_param', :real_one -- :commented\nAND {{ :jinja_inner }}",
+        expected: ['real_one'],
+    },
+    {
+        name: 'does not match numeric time literals',
+        input: "SELECT * FROM t WHERE created_at > '12:30' AND id = :id",
+        expected: ['id'],
+    },
+];
+
+function runParamCases() {
+    for (const testCase of paramCases) {
+        assert.strictEqual(
+            JSON.stringify(extractBindParams(testCase.input)),
+            JSON.stringify(testCase.expected),
+            `extractBindParams failed: ${testCase.name}`
+        );
+    }
+
+    assert.strictEqual(isListParam('id_user_list'), true, 'isListParam should detect _list suffix');
+    assert.strictEqual(isListParam('id_user'), false, 'isListParam should reject non-list names');
+
+    assert.strictEqual(parseParamValue('100'), 100, 'parseParamValue numeric');
+    assert.strictEqual(parseParamValue('true'), true, 'parseParamValue boolean');
+    assert.strictEqual(parseParamValue('null'), null, 'parseParamValue null');
+    assert.deepStrictEqual(parseParamValue('[1, 2, 3]'), [1, 2, 3], 'parseParamValue array');
+    assert.strictEqual(parseParamValue('2026-05-20'), '2026-05-20', 'parseParamValue plain string falls back to raw');
+    assert.strictEqual(parseParamValue('active'), 'active', 'parseParamValue bare word falls back to raw');
+
+    // buildParamItems tags names by usage; Jinja vars come first.
+    const items = buildParamItems(['active', 'shared'], ['id_user', 'shared', 'id_list']);
+    assert.deepStrictEqual(items.map(i => i.name), ['active', 'shared', 'id_user', 'id_list'], 'buildParamItems order');
+    const shared = items.find(i => i.name === 'shared');
+    assert.ok(shared.isJinja && shared.isBind, 'shared name flagged as both jinja and bind');
+    assert.strictEqual(items.find(i => i.name === 'id_list').isList, true, 'list bind flagged');
+    assert.strictEqual(items.find(i => i.name === 'active').isBind, false, 'jinja-only var is not a bind');
+
+    // buildRenderPayload: raw verbatim for filled scalar binds; unfilled jinja -> null;
+    // unfilled bind omitted; filled list goes to context (typed) not raw.
+    const payload = buildRenderPayload('SELECT 1', items, {
+        active: '',          // unfilled jinja -> null context
+        id_user: "100",      // filled scalar bind -> raw verbatim + typed context
+        shared: "'x'",       // filled, both -> raw verbatim + typed context
+        id_list: '[1, 2]',   // filled list -> context array, no raw
+        // 'shared' filled; id_user filled
+    });
+    assert.strictEqual(payload.context.active, null, 'unfilled jinja var becomes null');
+    assert.strictEqual(payload.raw.id_user, '100', 'filled scalar bind kept raw verbatim');
+    assert.strictEqual(payload.raw.shared, "'x'", 'quoted value kept verbatim');
+    assert.deepStrictEqual(payload.context.id_list, [1, 2], 'filled list parsed to array for context');
+    assert.ok(!('id_list' in payload.raw), 'list param not inlined via raw map');
+    assert.ok(!('active' in payload.raw), 'unfilled jinja var not in raw map');
+}
 
 const formatCases = [
     {
@@ -1869,7 +1940,241 @@ function runAliasedTableShadowCases() {
     }
 }
 
+// A query in the user's shape: spliced from Python fragment variables via
+// '''...''' + FRAG + '''...''' concatenation, with the fragments defined after.
+const STITCHED_DOC = [
+    "query = '''SELECT",
+    "    pc.code AS category_code,",
+    "    pcer.entity_id",
+    "FROM payout_category_entity_rule pcer",
+    "''' + CATEGORY_ENTITY_JOINS + '''",
+    "WHERE pc.is_active = 1'''",
+    "",
+    "CATEGORY_ENTITY_JOINS = '''LEFT JOIN dept d ON d.id = pcer.entity_id'''",
+].join("\n");
+
+const TWO_SEAM_DOC = [
+    "q = '''SELECT a,",
+    "''' + FRAG_ONE + '''",
+    "FROM t",
+    "''' + FRAG_TWO + '''",
+    "WHERE x = 1'''",
+].join("\n");
+
+const PLAIN_DOC = "q = '''SELECT a FROM t'''";
+
+const fragmentCases = [
+    {
+        name: 'single seam: groups two segments under one query',
+        fn: () => {
+            const ranges = findSQLRanges(STITCHED_DOC);
+            assert.strictEqual(ranges.length, 2, 'should emit a range per spliced segment');
+            assert.strictEqual(ranges[0].group, ranges[1].group, 'segments share one group');
+            const group = ranges[0].group;
+            assert.strictEqual(group.segments.length, 2, 'group has 2 segments');
+            assert.strictEqual(group.seams.length, 1, 'group has 1 seam');
+            assert.strictEqual(group.seams[0].name, 'CATEGORY_ENTITY_JOINS', 'seam name captured');
+            // seam offsets point at the variable in the source text
+            assert.strictEqual(
+                STITCHED_DOC.slice(group.seams[0].start, group.seams[0].end),
+                'CATEGORY_ENTITY_JOINS',
+                'seam start/end bracket the variable name'
+            );
+            // first segment is SQL, second is the continuation after the seam
+            assert.ok(STITCHED_DOC.slice(ranges[0].start, ranges[0].end).startsWith('SELECT'), 'segment 0 starts at SELECT');
+            assert.ok(STITCHED_DOC.slice(ranges[1].start, ranges[1].end).includes('WHERE pc.is_active = 1'), 'segment 1 holds the WHERE tail');
+        },
+    },
+    {
+        name: 'resolveFragment finds a module-level assignment and misses are null',
+        fn: () => {
+            assert.strictEqual(
+                resolveFragment(STITCHED_DOC, 'CATEGORY_ENTITY_JOINS'),
+                'LEFT JOIN dept d ON d.id = pcer.entity_id',
+                'resolves the assigned SQL fragment'
+            );
+            assert.strictEqual(resolveFragment(STITCHED_DOC, 'NOT_DEFINED'), null, 'unknown fragment resolves to null');
+        },
+    },
+    {
+        name: 'buildStitchedTemplate inlines resolved fragments and drops the seam syntax',
+        fn: () => {
+            const group = findSQLRanges(STITCHED_DOC)[0].group;
+            const stitched = buildStitchedTemplate(STITCHED_DOC, group, name => resolveFragment(STITCHED_DOC, name));
+            assert.ok(stitched.startsWith('SELECT'), 'stitched query starts at SELECT');
+            assert.ok(stitched.includes('LEFT JOIN dept d ON d.id = pcer.entity_id'), 'fragment SQL inlined');
+            assert.ok(stitched.includes('WHERE pc.is_active = 1'), 'tail preserved');
+            assert.ok(!stitched.includes("'''"), 'no triple-quote seams remain');
+            assert.ok(!stitched.includes('+ CATEGORY_ENTITY_JOINS +'), 'no Python concatenation remains');
+        },
+    },
+    {
+        name: 'buildStitchedTemplate falls back to a {{ name }} placeholder when unresolved',
+        fn: () => {
+            const group = findSQLRanges(STITCHED_DOC)[0].group;
+            const stitched = buildStitchedTemplate(STITCHED_DOC, group, () => null);
+            assert.ok(stitched.includes('{{ CATEGORY_ENTITY_JOINS }}'), 'unresolved fragment becomes a Jinja placeholder');
+        },
+    },
+    {
+        name: 'multiple seams: three segments, two ordered fragments',
+        fn: () => {
+            const ranges = findSQLRanges(TWO_SEAM_DOC);
+            assert.strictEqual(ranges.length, 3, 'three spliced segments');
+            const group = ranges[0].group;
+            assert.strictEqual(group.seams.length, 2, 'two seams');
+            assert.deepStrictEqual(group.seams.map(s => s.name), ['FRAG_ONE', 'FRAG_TWO'], 'seam names in order');
+            const stitched = buildStitchedTemplate(TWO_SEAM_DOC, group, () => null);
+            assert.strictEqual(
+                stitched,
+                'SELECT a,\n{{ FRAG_ONE }}\nFROM t\n{{ FRAG_TWO }}\nWHERE x = 1',
+                'segments and placeholders interleave in order'
+            );
+        },
+    },
+    {
+        name: 'plain single-block query keeps a one-segment group (backward compatible)',
+        fn: () => {
+            const ranges = findSQLRanges(PLAIN_DOC);
+            assert.strictEqual(ranges.length, 1, 'one range');
+            assert.strictEqual(ranges[0].group.segments.length, 1, 'single-segment group');
+            assert.strictEqual(ranges[0].group.seams.length, 0, 'no seams');
+            const stitched = buildStitchedTemplate(PLAIN_DOC, ranges[0].group, () => null);
+            assert.strictEqual(stitched, 'SELECT a FROM t', 'stitched output equals the lone segment');
+        },
+    },
+];
+
+const viewCases = [
+    {
+        name: 'stitched view maps virtual offsets back to the right segment',
+        fn: () => {
+            const group = findSQLRanges(STITCHED_DOC)[0].group;
+            const view = buildStitchedView(STITCHED_DOC, group, name => resolveFragment(STITCHED_DOC, name));
+            // The WHERE tail lives in segment 2; find it in the virtual content
+            const vIdx = view.content.indexOf('pc.is_active');
+            assert.ok(vIdx > 0, 'reference is present in stitched content');
+            const real = view.toReal(vIdx, vIdx + 'pc.is_active'.length);
+            assert.ok(real, 'virtual range maps to a real range');
+            assert.strictEqual(
+                STITCHED_DOC.slice(real.start, real.end),
+                'pc.is_active',
+                'mapped real offsets point at the same text in the document'
+            );
+            // round-trip
+            assert.strictEqual(view.toVirtual(real.start), vIdx, 'real→virtual round-trips');
+        },
+    },
+    {
+        name: 'offsets inside an inlined fragment have no real position',
+        fn: () => {
+            const group = findSQLRanges(STITCHED_DOC)[0].group;
+            const view = buildStitchedView(STITCHED_DOC, group, name => resolveFragment(STITCHED_DOC, name));
+            const vIdx = view.content.indexOf('LEFT JOIN dept'); // this text is from the inlined fragment
+            assert.ok(vIdx > 0, 'fragment text present in stitched content');
+            assert.strictEqual(view.toReal(vIdx, vIdx + 4), null, 'inlined fragment text does not map to the document');
+        },
+    },
+    {
+        name: 'alias defined in a later segment resolves a reference in an earlier one',
+        fn: () => {
+            // Reference pcer.entity_id is in segment 0; FROM ... pcer is in segment 1.
+            const group = findSQLRanges(STITCHED_DOC)[0].group;
+            const view = buildStitchedView(STITCHED_DOC, group, name => resolveFragment(STITCHED_DOC, name));
+            const { tableRanges } = findSemanticEntityRanges(view.content, createEmptySchemaMetadata());
+            // The FROM table token should be recognised in the stitched content
+            const tables = tableRanges.map(r => view.content.slice(r.start, r.end));
+            assert.ok(
+                tables.includes('payout_category_entity_rule'),
+                'FROM table from segment 1 is seen when analysing the whole stitched query'
+            );
+        },
+    },
+];
+
+const importCases = [
+    {
+        name: 'single-line relative import yields the module and source name',
+        fn: () => {
+            const doc = 'from .constants import CATEGORY_ENTITY_JOINS, FOO\n';
+            const cands = findFragmentImportModule(doc, 'CATEGORY_ENTITY_JOINS');
+            assert.strictEqual(cands.length, 1, 'one candidate');
+            assert.strictEqual(cands[0].module, '.constants', 'relative module preserved with dot');
+            assert.strictEqual(cands[0].sourceName, 'CATEGORY_ENTITY_JOINS', 'source name matches');
+        },
+    },
+    {
+        name: 'aliased import maps the bound name back to the source name',
+        fn: () => {
+            const doc = 'from app.sql.frags import RAW_JOINS as CATEGORY_ENTITY_JOINS\n';
+            const cands = findFragmentImportModule(doc, 'CATEGORY_ENTITY_JOINS');
+            assert.strictEqual(cands.length, 1, 'one candidate');
+            assert.strictEqual(cands[0].module, 'app.sql.frags', 'absolute dotted module preserved');
+            assert.strictEqual(cands[0].sourceName, 'RAW_JOINS', 'source name is the pre-alias name');
+        },
+    },
+    {
+        name: 'parenthesized multi-line import is parsed',
+        fn: () => {
+            const doc = 'from .constants import (\n    FOO,\n    CATEGORY_ENTITY_JOINS,\n    BAR as BAZ,\n)\n';
+            const cands = findFragmentImportModule(doc, 'CATEGORY_ENTITY_JOINS');
+            assert.strictEqual(cands.length, 1, 'found inside parens');
+            assert.strictEqual(cands[0].sourceName, 'CATEGORY_ENTITY_JOINS');
+        },
+    },
+    {
+        name: 'star import yields a candidate searched under the same name',
+        fn: () => {
+            const doc = 'from .constants import *\n';
+            const cands = findFragmentImportModule(doc, 'CATEGORY_ENTITY_JOINS');
+            assert.strictEqual(cands.length, 1, 'star import is a candidate');
+            assert.strictEqual(cands[0].module, '.constants');
+            assert.strictEqual(cands[0].sourceName, 'CATEGORY_ENTITY_JOINS', 'star searches the source for the same name');
+        },
+    },
+    {
+        name: 'unrelated imports produce no candidate for the name',
+        fn: () => {
+            const doc = 'from .other import SOMETHING_ELSE\nimport os\n';
+            assert.deepStrictEqual(findFragmentImportModule(doc, 'CATEGORY_ENTITY_JOINS'), [], 'no candidates');
+        },
+    },
+];
+
+function runImportCases() {
+    for (const testCase of importCases) {
+        try {
+            testCase.fn();
+        } catch (err) {
+            throw new Error(`import case failed: ${testCase.name}\n${err.message}`);
+        }
+    }
+}
+
+function runViewCases() {
+    for (const testCase of viewCases) {
+        try {
+            testCase.fn();
+        } catch (err) {
+            throw new Error(`stitched view case failed: ${testCase.name}\n${err.message}`);
+        }
+    }
+}
+
+function runFragmentCases() {
+    for (const testCase of fragmentCases) {
+        try {
+            testCase.fn();
+        } catch (err) {
+            throw new Error(`fragment case failed: ${testCase.name}\n${err.message}`);
+        }
+    }
+}
+
 function main() {
+    runFragmentCases();
+    runImportCases();
+    runViewCases();
     runFormatCases();
     runCteNameCases();
     runRangeCases();
@@ -1888,7 +2193,8 @@ function main() {
     runAliasedTableShadowCases();
     runBracketCases();
     runUnmatchedBracketCases();
-    console.log(`Passed ${formatCases.length + cteNameCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + aliasedTableShadowCases.length + bracketCases.length + unmatchedBracketCases.length} tests.`);
+    runParamCases();
+    console.log(`Passed ${formatCases.length + cteNameCases.length + rangeCases.length + blockFormatCases.length + schemaMetadataCases.length + semanticHighlightCases.length + workspacePatternCases.length + semanticWarningCases.length + wordCompletionContextCases.length + completionCases.length + tableCompletionContextCases.length + tableCompletionCases.length + commaWarningCases.length + ambiguousColumnCases.length + duplicateAliasCases.length + aliasedTableShadowCases.length + bracketCases.length + unmatchedBracketCases.length + paramCases.length + fragmentCases.length + importCases.length + viewCases.length} tests.`);
 }
 
 main();

@@ -5,9 +5,20 @@ const metadata = require('../src/schema/metadata');
 const completions = require('../src/sql/completions');
 const semantic = require('../src/sql/semantic');
 const diagnostics = require('../src/sql/diagnostics');
+const params = require('../src/sql/params');
+const fragments = require('../src/sql/fragments');
 
 function loadExtensionInternals() {
     return {
+        resolveFragment: fragments.resolveFragment,
+        findFragmentImportModule: fragments.findFragmentImportModule,
+        buildStitchedTemplate: fragments.buildStitchedTemplate,
+        buildStitchedView: fragments.buildStitchedView,
+        extractBindParams: params.extractBindParams,
+        isListParam: params.isListParam,
+        parseParamValue: params.parseParamValue,
+        buildParamItems: params.buildParamItems,
+        buildRenderPayload: params.buildRenderPayload,
         buildFormattedSQLBlock: formatter.buildFormattedSQLBlock,
         createEmptySchemaMetadata: metadata.createEmptySchemaMetadata,
         detectAliasedTableUsedByName: diagnostics.detectAliasedTableUsedByName,
